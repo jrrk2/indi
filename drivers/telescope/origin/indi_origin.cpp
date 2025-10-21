@@ -6,6 +6,9 @@
 #include <cmath>
 #include <sys/time.h>
 #include <unistd.h>
+#include <stdio.h>
+
+#warning "compiling indi_origin.cpp"
 
 // INDI requires these for driver registration
 std::unique_ptr<OriginTelescope> telescope(new OriginTelescope());
@@ -48,6 +51,18 @@ bool OriginTelescope::initProperties()
 {
     INDI::Telescope::initProperties();
     
+    qDebug() << ("initProperties() called");
+    
+    SetTelescopeCapability(
+        TELESCOPE_CAN_GOTO | 
+        TELESCOPE_CAN_SYNC | 
+        TELESCOPE_CAN_ABORT |
+        TELESCOPE_CAN_PARK |
+        TELESCOPE_HAS_TIME |
+        TELESCOPE_HAS_LOCATION,
+        4
+    );
+    
     // Connection address
     IUFillText(&AddressT[0], "HOST", "Host", "192.168.1.169");
     IUFillText(&AddressT[1], "PORT", "Port", "80");
@@ -55,6 +70,8 @@ bool OriginTelescope::initProperties()
                      "DEVICE_ADDRESS", "Server", CONNECTION_TAB, IP_RW, 60, IPS_IDLE);
     
     addDebugControl();
+    
+    qDebug() << ("initProperties() complete");
     
     return true;
 }
@@ -77,7 +94,7 @@ bool OriginTelescope::updateProperties()
 
 bool OriginTelescope::Connect()
 {
-    LOG_INFO("Connecting to Origin Telescope...");
+    qDebug() << ("=== Connect() START ===");
     
     // Create backend
     m_backend = new OriginBackendSimple();
@@ -86,11 +103,11 @@ bool OriginTelescope::Connect()
     QString host = QString::fromUtf8(AddressT[0].text);
     int port = atoi(AddressT[1].text);
     
-    LOGF_INFO("Connecting to %s:%d", host.toUtf8().constData(), port);
+    qDebug() << "Connecting to " << host.toUtf8().constData() << ":" << port;
     
     if (!m_backend->connectToTelescope(host, port))
     {
-        LOG_ERROR("Failed to connect to Origin Telescope");
+        qDebug() << ("Failed to connect to Origin Telescope");
         delete m_backend;
         m_backend = nullptr;
         return false;
@@ -98,9 +115,35 @@ bool OriginTelescope::Connect()
     
     m_backend->setConnected(true);
     m_connected = true;
+
+    polling_timer.setSingleShot(false);
+    polling_timer.callOnTimeout([this]() {
+    static int hitCount = 0;
+    hitCount++;
     
-    // Start INDI polling timer
-    SetTimer(getCurrentPollingPeriod());
+    printf("=== TimerHit #%d START ===", hitCount);
+    
+    if (!isConnected())
+    {
+        qDebug() << ("TimerHit: Not connected, skipping");
+        return;
+    }
+    
+    // Poll the backend
+    if (m_backend)
+    {
+        m_backend->poll();
+    }
+    
+    // Update scope status
+    ReadScopeStatus();
+    
+    printf("=== TimerHit #%d END ===", hitCount);
+
+    });
+
+    polling_timer.start(10);
+    qDebug() << ("Timer set");
     
     // Create camera device
     if (!camera)
@@ -110,13 +153,13 @@ bool OriginTelescope::Connect()
         camera->ISGetProperties(nullptr);
     }
     
-    LOG_INFO("Connected to Origin Telescope");
+    qDebug() << ("=== Connect() COMPLETE ===");
     return true;
 }
 
 bool OriginTelescope::Disconnect()
 {
-    LOG_INFO("Disconnecting from Origin Telescope");
+    qDebug() << ("Disconnecting from Origin Telescope");
     
     if (m_backend)
     {
@@ -133,25 +176,48 @@ bool OriginTelescope::Disconnect()
 bool OriginTelescope::ReadScopeStatus()
 {
     if (!m_backend || !m_connected)
+    {
+        qDebug() << ("ReadScopeStatus called but not connected");
         return false;
+    }
     
     auto status = m_backend->status();
+    
+    qDebug() << "Backend status: RA=" <<
+      status.raPosition << " Dec=" << status.decPosition << "Tracking=" << status.isTracking << "Slewing=" << status.isSlewing;
     
     // Update coordinates
     m_currentRA = status.raPosition;
     m_currentDec = status.decPosition;
     
+    printf("Setting INDI coords: RA=%.6f Dec=%.6f", m_currentRA, m_currentDec);
+    
+    // THIS IS THE CRITICAL CALL - it sends coordinates to Ekos
     NewRaDec(m_currentRA, m_currentDec);
+    
+    if (false) qDebug() << ("After NewRaDec() call");
     
     // Update state
     if (status.isSlewing)
+    {
         TrackState = SCOPE_SLEWING;
+        qDebug() << ("State: SLEWING");
+    }
     else if (status.isTracking)
+    {
         TrackState = SCOPE_TRACKING;
+        qDebug() << ("State: TRACKING");
+    }
     else if (status.isParked)
+    {
         TrackState = SCOPE_PARKED;
+        qDebug() << ("State: PARKED");
+    }
     else
+    {
         TrackState = SCOPE_IDLE;
+        if (false) qDebug() << ("State: IDLE");
+    }
     
     return true;
 }
@@ -187,7 +253,7 @@ bool OriginTelescope::Abort()
     if (!m_backend || !m_connected)
         return false;
     
-    LOG_INFO("Aborting slew");
+    qDebug() << ("Aborting slew");
     return m_backend->abortMotion();
 }
 
@@ -196,7 +262,7 @@ bool OriginTelescope::Park()
     if (!m_backend || !m_connected)
         return false;
     
-    LOG_INFO("Parking telescope");
+    qDebug() << ("Parking telescope");
     return m_backend->parkMount();
 }
 
@@ -205,26 +271,8 @@ bool OriginTelescope::UnPark()
     if (!m_backend || !m_connected)
         return false;
     
-    LOG_INFO("Unparking telescope");
+    qDebug() << ("Unparking telescope");
     return m_backend->unparkMount();
-}
-
-void OriginTelescope::TimerHit()
-{
-    if (!isConnected())
-        return;
-    
-    // Poll the backend - this processes WebSocket messages
-    if (m_backend)
-    {
-        m_backend->poll();
-    }
-    
-    // Update scope status
-    ReadScopeStatus();
-    
-    // Schedule next timer hit
-    SetTimer(getCurrentPollingPeriod());
 }
 
 bool OriginTelescope::ISNewText(const char *dev, const char *name, char *texts[], char *names[], int n)
@@ -282,12 +330,12 @@ bool OriginCamera::Connect()
 {
     if (!m_backend || !m_backend->isConnected())
     {
-        LOG_ERROR("Telescope must be connected first");
+        qDebug() << ("Telescope must be connected first");
         return false;
     }
     
     m_backend->setCameraConnected(true);
-    LOG_INFO("Origin Camera connected");
+    qDebug() << ("Origin Camera connected");
     
     // Set callback instead of connecting signal
     m_backend->setImageCallback([this](const QString& path, const QByteArray& data, 
@@ -302,7 +350,7 @@ bool OriginCamera::Connect()
 
 bool OriginCamera::Disconnect()
 {
-    LOG_INFO("Origin Camera disconnected");
+    qDebug() << ("Origin Camera disconnected");
     return true;
 }
 
@@ -333,7 +381,7 @@ bool OriginCamera::AbortExposure()
     if (PrimaryCCD.getExposureLeft() <= 0)
         return false;
     
-    LOG_INFO("Aborting exposure");
+    qDebug() << ("Aborting exposure");
     
     return m_backend->abortExposure();
 }
@@ -380,7 +428,7 @@ void OriginCamera::handleNewImage(const QString&, const QByteArray& data,
     if (PrimaryCCD.getExposureLeft() <= 0)
         return;
     
-    LOG_INFO("Image received from Origin");
+    qDebug() << ("Image received from Origin");
     
     // Set image buffer
     PrimaryCCD.setFrameBufferSize(data.size());

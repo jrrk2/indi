@@ -66,13 +66,21 @@ void OriginBackendSimple::poll()
         return;
     
     // Check for incoming messages
+    int messageCount = 0;
     while (m_webSocket->hasData())
     {
         std::string message = m_webSocket->receiveText();
         if (!message.empty())
         {
+            messageCount++;
+            qDebug() << "RECEIVED MESSAGE:" << QString::fromStdString(message);
             processMessage(message);
         }
+    }
+    
+    if (messageCount > 0)
+    {
+        qDebug() << "Processed" << messageCount << "messages";
     }
 }
 
@@ -88,7 +96,8 @@ void OriginBackendSimple::processMessage(const std::string& message)
     
     // Parse telescope data
     QString source = obj["Source"].toString();
-    
+    qDebug() << "Processing message from:" << source;
+
     if (source == "Mount")
     {
         // Update mount status

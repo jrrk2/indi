@@ -27,7 +27,6 @@ protected:
     virtual bool Abort() override;
     virtual bool Park() override;
     virtual bool UnPark() override;
-    virtual void TimerHit() override;
 
 private:
     ITextVectorProperty AddressTP;
@@ -38,6 +37,7 @@ private:
     double m_currentRA {0};
     double m_currentDec {0};
     bool m_connected {false};
+    INDI::Timer polling_timer;
 };
 
 class OriginCamera : public INDI::CCD
