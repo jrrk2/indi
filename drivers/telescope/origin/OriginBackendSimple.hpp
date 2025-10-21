@@ -1,18 +1,14 @@
 #pragma once
 
-#include <QObject>
 #include <QString>
 #include <QJsonObject>
 #include <QNetworkAccessManager>
-#include <QTimer>
-#include <QDateTime>
+#include <functional>
 #include "SimpleWebSocket.h"
-#include "TelescopeDataProcessor.hpp"
+#include "TelescopeData.hpp"
 
-class OriginBackendSimple : public QObject
+class OriginBackendSimple
 {
-    Q_OBJECT
-
 public:
     struct TelescopeStatus {
         double altPosition = 0.0;
@@ -30,7 +26,11 @@ public:
         double temperature = 20.0;
     };
 
-    explicit OriginBackendSimple(QObject *parent = nullptr);
+    // Callback types
+    using ImageCallback = std::function<void(const QString&, const QByteArray&, double, double, double)>;
+    using StatusCallback = std::function<void()>;
+
+    explicit OriginBackendSimple();
     ~OriginBackendSimple();
 
     // Connection
@@ -61,17 +61,15 @@ public:
     TelescopeStatus status() const { return m_status; }
     double temperature() const { return m_status.temperature; }
     
+    // Callbacks
+    void setImageCallback(ImageCallback cb) { m_imageCallback = cb; }
+    void setStatusCallback(StatusCallback cb) { m_statusCallback = cb; }
+    
     // Polling - call this from INDI TimerHit()
     void poll();
 
-signals:
-    void tiffImageDownloaded(const QString& path, const QByteArray& data,
-                            double ra, double dec, double exposure);
-    void statusUpdated();
-
 private:
     SimpleWebSocket *m_webSocket;
-    TelescopeDataProcessor *m_dataProcessor;
     QNetworkAccessManager *m_networkManager;
     
     QString m_connectedHost;
@@ -81,7 +79,12 @@ private:
     bool m_cameraConnected;
     
     TelescopeStatus m_status;
+    TelescopeData m_telescopeData;
     int m_nextSequenceId;
+    
+    // Callbacks
+    ImageCallback m_imageCallback;
+    StatusCallback m_statusCallback;
     
     // Message handling
     void processMessage(const std::string& message);

@@ -80,7 +80,7 @@ bool OriginTelescope::Connect()
     LOG_INFO("Connecting to Origin Telescope...");
     
     // Create backend
-    m_backend = new OriginBackendSimple(nullptr);
+    m_backend = new OriginBackendSimple();
     
     // Get connection settings
     QString host = QString::fromUtf8(AddressT[0].text);
@@ -289,14 +289,12 @@ bool OriginCamera::Connect()
     m_backend->setCameraConnected(true);
     LOG_INFO("Origin Camera connected");
     
-    // Connect signal for images
-    QObject::connect(m_backend, &OriginBackendSimple::tiffImageDownloaded,
-                    [this](const QString& path, const QByteArray& data, 
-                           double ra, double dec, double exposure) {
+    // Set callback instead of connecting signal
+    m_backend->setImageCallback([this](const QString& path, const QByteArray& data, 
+                                       double ra, double dec, double exposure) {
         handleNewImage(path, data, ra, dec, exposure);
     });
     
-    // Start timer for exposure updates
     SetTimer(1000);
     
     return true;

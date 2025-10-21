@@ -5,28 +5,25 @@
 #include <QNetworkReply>
 #include <QUrl>
 #include <QDebug>
+#include <QEventLoop>
 #include <cmath>
 
-OriginBackendSimple::OriginBackendSimple(QObject *parent)
-    : QObject(parent)
-    , m_webSocket(new SimpleWebSocket())
-    , m_dataProcessor(new TelescopeDataProcessor(this))
-    , m_networkManager(new QNetworkAccessManager(this))
+OriginBackendSimple::OriginBackendSimple()
+    : m_webSocket(new SimpleWebSocket())
+    , m_networkManager(new QNetworkAccessManager())
     , m_connectedPort(80)
     , m_connected(false)
     , m_logicallyConnected(false)
     , m_cameraConnected(false)
     , m_nextSequenceId(2000)
 {
-    // Connect data processor signals
-    connect(m_dataProcessor, &TelescopeDataProcessor::mountStatusUpdated,
-            this, &OriginBackendSimple::statusUpdated);
 }
 
 OriginBackendSimple::~OriginBackendSimple()
 {
     disconnectFromTelescope();
     delete m_webSocket;
+    delete m_networkManager;
 }
 
 bool OriginBackendSimple::connectToTelescope(const QString& host, int port)
@@ -89,19 +86,27 @@ void OriginBackendSimple::processMessage(const std::string& message)
     
     QJsonObject obj = doc.object();
     
-    // Process through data processor
-    m_dataProcessor->processJsonPacket(qmsg.toUtf8());
+    // Parse telescope data
+    QString source = obj["Source"].toString();
     
-    // Update our status from processor
-    const TelescopeData& data = m_dataProcessor->getData();
-    m_status.raPosition = radiansToHours(data.mount.enc0);
-    m_status.decPosition = radiansToDegrees(data.mount.enc1);
-    m_status.isTracking = data.mount.isTracking;
-    m_status.isSlewing = !data.mount.isGotoOver;
-    m_status.temperature = data.environment.ambientTemperature;
+    if (source == "Mount")
+    {
+        // Update mount status
+        if (obj.contains("Ra"))
+            m_status.raPosition = radiansToHours(obj["Ra"].toDouble());
+        if (obj.contains("Dec"))
+            m_status.decPosition = radiansToDegrees(obj["Dec"].toDouble());
+        if (obj.contains("IsTracking"))
+            m_status.isTracking = obj["IsTracking"].toBool();
+        if (obj.contains("IsGotoOver"))
+            m_status.isSlewing = !obj["IsGotoOver"].toBool();
+        
+        // Call status callback
+        if (m_statusCallback)
+            m_statusCallback();
+    }
     
     // Handle image notifications
-    QString source = obj["Source"].toString();
     QString command = obj["Command"].toString();
     QString type = obj["Type"].toString();
     
@@ -110,10 +115,6 @@ void OriginBackendSimple::processMessage(const std::string& message)
         QString filePath = obj["FileLocation"].toString();
         if (!filePath.isEmpty() && filePath.endsWith(".tiff", Qt::CaseInsensitive))
         {
-            double ra = obj["Ra"].toDouble();
-            double dec = obj["Dec"].toDouble();
-            double exposure = obj["ExposureTime"].toDouble();
-            
             requestImage(filePath);
         }
     }
@@ -136,11 +137,12 @@ void OriginBackendSimple::sendCommand(const QString& command, const QString& des
     }
     
     QJsonDocument doc(jsonCommand);
-    QString message = doc.toJson(QJsonDocument::Compact);
+    QString msgStr = doc.toJson(QJsonDocument::Compact);
     
     if (m_webSocket && m_webSocket->isConnected())
     {
-        m_webSocket->sendText(message.toStdString());
+        m_webSocket->sendText(msgStr.toStdString());
+        qDebug() << "Sent:" << msgStr;
     }
 }
 
@@ -206,7 +208,7 @@ bool OriginBackendSimple::takeSnapshot(double exposure, int iso)
 
 bool OriginBackendSimple::abortExposure()
 {
-    return true; // Origin doesn't support abort
+    return true;
 }
 
 void OriginBackendSimple::requestImage(const QString& filePath)
@@ -214,15 +216,20 @@ void OriginBackendSimple::requestImage(const QString& filePath)
     QString fullPath = QString("http://%1/SmartScope-1.0/dev2/%2")
                        .arg(m_connectedHost, filePath);
     
-    QUrl url(fullPath);  // CREATE QUrl FIRST
-    QNetworkRequest request(url);  // THEN CREATE REQUEST
+    QUrl url(fullPath);
+    QNetworkRequest request(url);
     QNetworkReply *reply = m_networkManager->get(request);
     
-    connect(reply, &QNetworkReply::finished, [this, reply, filePath]() {
+    QObject::connect(reply, &QNetworkReply::finished, [this, reply, filePath]() {
         if (reply->error() == QNetworkReply::NoError)
         {
             QByteArray data = reply->readAll();
-            emit tiffImageDownloaded(filePath, data, 0, 0, 0);
+            
+            // Call image callback instead of emitting signal
+            if (m_imageCallback)
+            {
+                m_imageCallback(filePath, data, 0, 0, 0);
+            }
         }
         reply->deleteLater();
     });
