@@ -267,3 +267,6 @@ add_executable(indi_planewave_telescope
 target_link_libraries(indi_planewave_telescope indidriver ${HTTPLIB_LIBRARY})
 
 install(TARGETS indi_planewave_telescope RUNTIME DESTINATION bin)
+
+# Origin Telescope
+add_subdirectory(origin)
