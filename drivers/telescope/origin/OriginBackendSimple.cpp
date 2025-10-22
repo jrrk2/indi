@@ -5,7 +5,6 @@
 #include <QNetworkReply>
 #include <QUrl>
 #include <QDebug>
-#include <QEventLoop>
 #include <cmath>
 
 OriginBackendSimple::OriginBackendSimple()
@@ -73,14 +72,14 @@ void OriginBackendSimple::poll()
         if (!message.empty())
         {
             messageCount++;
-            qDebug() << "RECEIVED MESSAGE:" << QString::fromStdString(message);
+            if (false) qDebug() << "RECEIVED MESSAGE:" << QString::fromStdString(message);
             processMessage(message);
         }
     }
     
     if (messageCount > 0)
     {
-        qDebug() << "Processed" << messageCount << "messages";
+      if (false) qDebug() << "Processed" << messageCount << "messages";
     }
 }
 
@@ -96,7 +95,7 @@ void OriginBackendSimple::processMessage(const std::string& message)
     
     // Parse telescope data
     QString source = obj["Source"].toString();
-    qDebug() << "Processing message from:" << source;
+    if (false) qDebug() << "Processing message from:" << source;
 
     if (source == "Mount")
     {

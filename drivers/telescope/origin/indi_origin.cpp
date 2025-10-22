@@ -7,6 +7,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 #include <stdio.h>
+#include <QImage>
 
 #warning "compiling indi_origin.cpp"
 
@@ -64,7 +65,7 @@ bool OriginTelescope::initProperties()
     );
     
     // Connection address
-    IUFillText(&AddressT[0], "HOST", "Host", "192.168.1.169");
+    IUFillText(&AddressT[0], "HOST", "Host", "192.168.1.195");
     IUFillText(&AddressT[1], "PORT", "Port", "80");
     IUFillTextVector(&AddressTP, AddressT, 2, getDeviceName(),
                      "DEVICE_ADDRESS", "Server", CONNECTION_TAB, IP_RW, 60, IPS_IDLE);
@@ -161,14 +162,14 @@ bool OriginTelescope::ReadScopeStatus()
     
     auto status = m_backend->status();
     
-    qDebug() << "Backend status: RA=" <<
+    if (false) qDebug() << "Backend status: RA=" <<
       status.raPosition << " Dec=" << status.decPosition << "Tracking=" << status.isTracking << "Slewing=" << status.isSlewing;
     
     // Update coordinates
     m_currentRA = status.raPosition;
     m_currentDec = status.decPosition;
     
-    qDebug() << "Setting INDI coords: RA=" << m_currentRA << " Dec=" << m_currentDec;
+    if (false) qDebug() << "Setting INDI coords: RA=" << m_currentRA << " Dec=" << m_currentDec;
     
     // Update the internal INDI state
     NewRaDec(m_currentRA, m_currentDec);
@@ -177,7 +178,7 @@ bool OriginTelescope::ReadScopeStatus()
     // This is what makes the coordinates appear in Ekos
     EqNP.apply();
     
-    qDebug() << "After EqNP.apply() - coordinates sent to client";
+    if (false) qDebug() << "After EqNP.apply() - coordinates sent to client";
     
     // Update tracking state
     if (status.isSlewing)
@@ -471,45 +472,72 @@ bool OriginCamera::processAndUploadImage(const QByteArray& imageData)
 {
     qDebug() << "Processing image data:" << imageData.size() << "bytes";
     
-    int width = 4144;
-    int height = 2822;
+    // Use QImage to load the TIFF file
+    QImage qImage;
+    if (!qImage.loadFromData(imageData, "TIFF"))
+    {
+        qDebug() << "Failed to load TIFF image";
+        return false;
+    }
     
-    // Allocate buffer
+    qDebug() << "TIFF loaded: width=" << qImage.width() 
+             << "height=" << qImage.height() 
+             << "format=" << qImage.format();
+    
+    int width = qImage.width();
+    int height = qImage.height();
+    
+    // Allocate INDI buffer
     PrimaryCCD.setFrame(0, 0, width, height);
     PrimaryCCD.setFrameBufferSize(width * height * sizeof(uint16_t));
     
     uint16_t *image = (uint16_t *)PrimaryCCD.getFrameBuffer();
     
-    // Check if it's a TIFF file (starts with 'II' or 'MM')
-    if (imageData.size() >= 2 && 
-        ((imageData[0] == 'I' && imageData[1] == 'I') ||
-         (imageData[0] == 'M' && imageData[1] == 'M')))
+    // Convert QImage to 16-bit grayscale
+    // Origin likely sends RGB or grayscale TIFF
+    
+    if (qImage.format() == QImage::Format_Grayscale8 || 
+        qImage.format() == QImage::Format_Indexed8)
     {
-        qDebug() << "Image is TIFF format";
-        // TODO: Use libtiff to parse the TIFF file
-        // For now, just create a test pattern
-        for (int i = 0; i < width * height; i++)
+        // 8-bit grayscale - convert to 16-bit
+        qDebug() << "Converting 8-bit grayscale to 16-bit";
+        for (int y = 0; y < height; y++)
         {
-            image[i] = (i % 65536);
+            const uchar *line = qImage.constScanLine(y);
+            for (int x = 0; x < width; x++)
+            {
+                // Scale 8-bit (0-255) to 16-bit (0-65535)
+                image[y * width + x] = line[x] * 257; // 257 = 65535/255
+            }
         }
     }
-    else if (imageData.startsWith("SIMPLE"))
+    else if (qImage.format() == QImage::Format_Grayscale16)
     {
-        // It's a FITS file
-        qDebug() << "Image is FITS format";
-        // TODO: Parse FITS properly
-        memcpy(image, imageData.data(), std::min((size_t)imageData.size(), 
-                                                  width * height * sizeof(uint16_t)));
+        // 16-bit grayscale - direct copy
+        qDebug() << "Copying 16-bit grayscale directly";
+        for (int y = 0; y < height; y++)
+        {
+            const uint16_t *line = (const uint16_t *)qImage.constScanLine(y);
+            memcpy(&image[y * width], line, width * sizeof(uint16_t));
+        }
     }
     else
     {
-        qDebug() << "Unknown image format, creating test pattern";
-        // Create a test pattern
-        for (int i = 0; i < width * height; i++)
+        // RGB or other format - convert to grayscale
+        qDebug() << "Converting RGB to grayscale";
+        QImage grayImage = qImage.convertToFormat(QImage::Format_Grayscale8);
+        
+        for (int y = 0; y < height; y++)
         {
-            image[i] = (i % 65536);
+            const uchar *line = grayImage.constScanLine(y);
+            for (int x = 0; x < width; x++)
+            {
+                image[y * width + x] = line[x] * 257;
+            }
         }
     }
+    
+    qDebug() << "Image conversion complete";
     
     // Set FITS header info
     PrimaryCCD.setExposureDuration(m_exposureDuration);
