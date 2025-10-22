@@ -326,6 +326,8 @@ bool OriginCamera::updateProperties()
 bool OriginCamera::Connect()
 {
     qDebug() << ("Origin Camera connected");
+    // START THE CAMERA'S TIMER!
+    SetTimer(getCurrentPollingPeriod());
     return true;
 }
 
@@ -364,7 +366,7 @@ bool OriginCamera::StartExposure(float duration)
     m_pendingImageData.clear();
     
     // Tell the Origin telescope to take a snapshot!
-    if (!m_backend->takeSnapshot(duration, 100))
+    if (!m_backend->takeSnapshot(0.001, 100))
     {
         qDebug() << "Failed to send takeSnapshot command to telescope";
         return false;
@@ -446,7 +448,7 @@ void OriginCamera::TimerHit()
             else
             {
                 // Exposure time done but image not ready yet, keep waiting
-                qDebug() << "Exposure time complete, waiting for image from telescope...";
+	      if (false) qDebug() << "Exposure time complete, waiting for image from telescope...";
                 PrimaryCCD.setExposureLeft(0);
             }
         }

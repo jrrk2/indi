@@ -6,10 +6,13 @@
 #include <QUrl>
 #include <QDebug>
 #include <cmath>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netdb.h>
+#include <unistd.h>
 
 OriginBackendSimple::OriginBackendSimple()
     : m_webSocket(new SimpleWebSocket())
-    , m_networkManager(new QNetworkAccessManager())
     , m_connectedPort(80)
     , m_connected(false)
     , m_logicallyConnected(false)
@@ -22,7 +25,6 @@ OriginBackendSimple::~OriginBackendSimple()
 {
     disconnectFromTelescope();
     delete m_webSocket;
-    delete m_networkManager;
 }
 
 bool OriginBackendSimple::connectToTelescope(const QString& host, int port)
@@ -221,26 +223,124 @@ bool OriginBackendSimple::abortExposure()
 
 void OriginBackendSimple::requestImage(const QString& filePath)
 {
+    qDebug() << "Image notification received:" << filePath;
+    
+    // Store the path for later download
+    m_pendingImagePath = filePath;
+    
+    // Download the image using simple HTTP GET without QEventLoop
     QString fullPath = QString("http://%1/SmartScope-1.0/dev2/%2")
                        .arg(m_connectedHost, filePath);
     
-    QUrl url(fullPath);
-    QNetworkRequest request(url);
-    QNetworkReply *reply = m_networkManager->get(request);
+    qDebug() << "Will download from:" << fullPath;
     
-    QObject::connect(reply, &QNetworkReply::finished, [this, reply, filePath]() {
-        if (reply->error() == QNetworkReply::NoError)
+    // Use curl or simple HTTP download
+    QByteArray imageData = downloadImageSync(fullPath);
+    
+    if (!imageData.isEmpty())
+    {
+        qDebug() << "Downloaded" << imageData.size() << "bytes";
+        
+        // Call image callback with the data
+        if (m_imageCallback)
         {
-            QByteArray data = reply->readAll();
-            
-            // Call image callback instead of emitting signal
-            if (m_imageCallback)
-            {
-                m_imageCallback(filePath, data, 0, 0, 0);
-            }
+            m_imageCallback(filePath, imageData, 0, 0, 0);
         }
-        reply->deleteLater();
-    });
+    }
+    else
+    {
+        qDebug() << "Failed to download image";
+    }
+}
+
+
+// Add this helper function to OriginBackendSimple.cpp
+QByteArray OriginBackendSimple::downloadImageSync(const QString& url)
+{
+    QByteArray result;
+    
+    // Parse URL
+    QUrl qurl(url);
+    QString host = qurl.host();
+    int port = qurl.port(80);
+    QString path = qurl.path();
+    
+    qDebug() << "Downloading from host:" << host << "port:" << port << "path:" << path;
+    
+    // Create socket
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0)
+    {
+        qDebug() << "Failed to create socket";
+        return result;
+    }
+    
+    // Set socket timeout
+    struct timeval timeout;
+    timeout.tv_sec = 30;
+    timeout.tv_usec = 0;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    
+    // Resolve host
+    struct hostent *server = gethostbyname(host.toUtf8().constData());
+    if (server == nullptr)
+    {
+        qDebug() << "Failed to resolve host";
+        close(sock);
+        return result;
+    }
+    
+    // Connect
+    struct sockaddr_in serv_addr;
+    memset(&serv_addr, 0, sizeof(serv_addr));
+    serv_addr.sin_family = AF_INET;
+    memcpy(&serv_addr.sin_addr.s_addr, server->h_addr, server->h_length);
+    serv_addr.sin_port = htons(port);
+    
+    if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
+    {
+        qDebug() << "Failed to connect to server";
+        close(sock);
+        return result;
+    }
+    
+    // Send HTTP GET request
+    QString request = QString("GET %1 HTTP/1.1\r\n"
+                             "Host: %2\r\n"
+                             "Connection: close\r\n"
+                             "\r\n").arg(path, host);
+    
+    qDebug() << "Sending HTTP request";
+    send(sock, request.toUtf8().constData(), request.length(), 0);
+    
+    // Read response
+    char buffer[4096];
+    QByteArray response;
+    int bytesRead;
+    
+    while ((bytesRead = recv(sock, buffer, sizeof(buffer), 0)) > 0)
+    {
+        response.append(buffer, bytesRead);
+    }
+    
+    close(sock);
+    
+    qDebug() << "Received" << response.size() << "bytes total";
+    
+    // Parse HTTP response - find end of headers
+    int headerEnd = response.indexOf("\r\n\r\n");
+    if (headerEnd > 0)
+    {
+        // Extract body (the image data)
+        result = response.mid(headerEnd + 4);
+        qDebug() << "Image data size:" << result.size() << "bytes";
+    }
+    else
+    {
+        qDebug() << "Failed to parse HTTP response";
+    }
+    
+    return result;
 }
 
 double OriginBackendSimple::hoursToRadians(double hours)

@@ -70,7 +70,6 @@ public:
 
 private:
     SimpleWebSocket *m_webSocket;
-    QNetworkAccessManager *m_networkManager;
     
     QString m_connectedHost;
     int m_connectedPort;
@@ -85,7 +84,8 @@ private:
     // Callbacks
     ImageCallback m_imageCallback;
     StatusCallback m_statusCallback;
-    
+    QByteArray downloadImageSync(const QString& url);
+    QString m_pendingImagePath;    
     // Message handling
     void processMessage(const std::string& message);
     void sendCommand(const QString& command, const QString& destination,
