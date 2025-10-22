@@ -194,6 +194,7 @@ bool OriginTelescope::ReadScopeStatus()
     
     // THIS IS THE CRITICAL CALL - it sends coordinates to Ekos
     NewRaDec(m_currentRA, m_currentDec);
+    EqNP.apply();
     
     if (false) qDebug() << ("After NewRaDec() call");
     
