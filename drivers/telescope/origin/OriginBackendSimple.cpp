@@ -10,6 +10,8 @@
 #include <netinet/in.h>
 #include <netdb.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
 
 OriginBackendSimple::OriginBackendSimple()
     : m_webSocket(new SimpleWebSocket())
@@ -94,12 +96,16 @@ QByteArray OriginBackendSimple::downloadImageSync(const QString& url)
         return result;
     }
     
-    // Set socket timeouts - increase for large files
+    // Set socket timeouts
     struct timeval timeout;
-    timeout.tv_sec = 60;  // 60 second timeout
+    timeout.tv_sec = 60;
     timeout.tv_usec = 0;
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
     setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    
+    // Set socket to non-blocking for the download loop
+    int flags = fcntl(sock, F_GETFL, 0);
+    fcntl(sock, F_SETFL, flags | O_NONBLOCK);
     
     // Resolve host
     struct hostent *server = gethostbyname(host.toUtf8().constData());
@@ -110,21 +116,20 @@ QByteArray OriginBackendSimple::downloadImageSync(const QString& url)
         return result;
     }
     
-    // Connect
+    // Connect (switch back to blocking for connect)
+    fcntl(sock, F_SETFL, flags);
     struct sockaddr_in serv_addr;
     memset(&serv_addr, 0, sizeof(serv_addr));
     serv_addr.sin_family = AF_INET;
     memcpy(&serv_addr.sin_addr.s_addr, server->h_addr, server->h_length);
     serv_addr.sin_port = htons(port);
     
-    qDebug() << "Connecting to server...";
     if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
     {
         qDebug() << "Failed to connect to server";
         close(sock);
         return result;
     }
-    qDebug() << "Connected";
     
     // Send HTTP GET request
     QString request = QString("GET %1 HTTP/1.1\r\n"
@@ -132,77 +137,149 @@ QByteArray OriginBackendSimple::downloadImageSync(const QString& url)
                              "Connection: close\r\n"
                              "\r\n").arg(path, host);
     
-    qDebug() << "Sending HTTP request";
     send(sock, request.toUtf8().constData(), request.length(), 0);
     
-    // Read response
-    char buffer[65536];  // Larger buffer for faster download
+    // Switch to non-blocking for reading
+    fcntl(sock, F_SETFL, flags | O_NONBLOCK);
+    
+    // Read response with periodic WebSocket keepalive
+    char buffer[65536];
     QByteArray response;
-    int bytesRead;
     int totalBytes = 0;
+    auto lastKeepalive = std::chrono::steady_clock::now();
+    auto lastLog = lastKeepalive;
     
-    qDebug() << "Reading response...";
-    auto lastLog = std::chrono::steady_clock::now();
+    qDebug() << "Reading response with WebSocket keepalive...";
     
-    while ((bytesRead = recv(sock, buffer, sizeof(buffer), 0)) > 0)
+    while (true)
     {
-        response.append(buffer, bytesRead);
-        totalBytes += bytesRead;
+        int bytesRead = recv(sock, buffer, sizeof(buffer), 0);
         
-        // Log progress every 5 seconds
+        if (bytesRead > 0)
+        {
+            response.append(buffer, bytesRead);
+            totalBytes += bytesRead;
+        }
+        else if (bytesRead == 0)
+        {
+            // Connection closed - done
+            break;
+        }
+        else if (errno != EAGAIN && errno != EWOULDBLOCK)
+        {
+            // Real error
+            qDebug() << "Socket error:" << strerror(errno);
+            break;
+        }
+        
+        // Check if we should send a keepalive
         auto now = std::chrono::steady_clock::now();
-        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - lastLog).count();
-        if (elapsed >= 5)
+        auto keepaliveElapsed = std::chrono::duration_cast<std::chrono::seconds>(now - lastKeepalive).count();
+        
+        if (keepaliveElapsed >= 5)  // Every 5 seconds
+        {
+            qDebug() << "Sending WebSocket keepalive (downloaded" << totalBytes << "bytes)";
+            
+            // Send a lightweight status request to keep WebSocket alive
+            sendCommand("GetStatus", "Mount");
+            
+            // Process any incoming WebSocket messages
+            while (m_webSocket->hasData())
+            {
+                std::string message = m_webSocket->receiveText();
+                if (!message.empty())
+                {
+                    processMessage(message);
+                }
+            }
+            
+            lastKeepalive = now;
+        }
+        
+        // Log progress
+        auto logElapsed = std::chrono::duration_cast<std::chrono::seconds>(now - lastLog).count();
+        if (logElapsed >= 5)
         {
             qDebug() << "Downloaded" << totalBytes << "bytes so far...";
             lastLog = now;
         }
+        
+        // Small sleep to avoid spinning
+        usleep(10000);  // 10ms
     }
     
     close(sock);
     
     qDebug() << "Received" << response.size() << "bytes total";
     
-    // Parse HTTP response - find end of headers
+    // Parse HTTP response
     int headerEnd = response.indexOf("\r\n\r\n");
     if (headerEnd > 0)
     {
-        // Extract body (the image data)
         result = response.mid(headerEnd + 4);
         qDebug() << "Image data size:" << result.size() << "bytes";
-    }
-    else
-    {
-        qDebug() << "Failed to parse HTTP response";
     }
     
     return result;
 }
 
-// Also add to poll() to monitor WebSocket health:
 void OriginBackendSimple::poll()
 {
-    if (!m_connected || !m_webSocket)
+    if (!m_webSocket)
         return;
     
     static auto lastPollTime = std::chrono::steady_clock::now();
     auto now = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - lastPollTime).count();
     
-    // Log if poll() wasn't called for a long time (indicates blocking)
-    if (elapsed > 5000)  // More than 5 seconds
+    // Log if poll() wasn't called for a long time
+    if (elapsed > 5000)
     {
-        qDebug() << "WARNING: poll() was blocked for" << elapsed << "ms - WebSocket may timeout!";
+        qDebug() << "WARNING: poll() was blocked for" << elapsed << "ms";
     }
     lastPollTime = now;
     
     // Check WebSocket connection status
     if (!m_webSocket->isConnected())
     {
-        qDebug() << "ERROR: WebSocket disconnected!";
-        m_connected = false;
+        if (m_connected)
+        {
+            qDebug() << "ERROR: WebSocket disconnected! Will attempt reconnection...";
+            m_connected = false;
+            
+            // Try to reconnect immediately
+            if (reconnectWebSocket())
+            {
+                qDebug() << "Reconnection successful, continuing...";
+            }
+            else
+            {
+                qDebug() << "Reconnection failed, will retry on next poll()";
+            }
+        }
+        else
+        {
+            // Not connected, try to reconnect periodically
+            static auto lastReconnectAttempt = std::chrono::steady_clock::now();
+            auto timeSinceLastAttempt = std::chrono::duration_cast<std::chrono::seconds>(
+                now - lastReconnectAttempt).count();
+            
+            if (timeSinceLastAttempt >= 5)  // Try every 5 seconds
+            {
+                qDebug() << "Attempting periodic reconnection...";
+                if (reconnectWebSocket())
+                {
+                    qDebug() << "Periodic reconnection successful!";
+                }
+                lastReconnectAttempt = now;
+            }
+        }
+        
         return;
     }
+    
+    if (!m_connected)
+        return;
     
     // Check for incoming messages
     int messageCount = 0;
@@ -212,14 +289,14 @@ void OriginBackendSimple::poll()
         if (!message.empty())
         {
             messageCount++;
-            qDebug() << "RECEIVED MESSAGE:" << QString::fromStdString(message);
+            if (false) qDebug() << "RECEIVED MESSAGE:" << QString::fromStdString(message);
             processMessage(message);
         }
     }
     
     if (messageCount > 0)
     {
-        qDebug() << "Processed" << messageCount << "messages";
+        if (false) qDebug() << "Processed" << messageCount << "messages";
     }
 }
 
@@ -227,6 +304,10 @@ bool OriginBackendSimple::connectToTelescope(const QString& host, int port)
 {
     m_connectedHost = host;
     m_connectedPort = port;
+    
+    // Save for reconnection
+    m_lastConnectedHost = host;
+    m_lastConnectedPort = port;
     
     std::string path = "/SmartScope-1.0/mountControlEndpoint";
     
@@ -245,6 +326,33 @@ bool OriginBackendSimple::connectToTelescope(const QString& host, int port)
     sendCommand("GetStatus", "Mount");
     
     return true;
+}
+
+
+bool OriginBackendSimple::reconnectWebSocket()
+{
+    if (!m_autoReconnect)
+        return false;
+    
+    qDebug() << "Attempting to reconnect WebSocket...";
+    
+    std::string path = "/SmartScope-1.0/mountControlEndpoint";
+    
+    if (m_webSocket->connect(m_lastConnectedHost.toStdString(), m_lastConnectedPort, path))
+    {
+        m_connected = true;
+        qDebug() << "WebSocket reconnected successfully";
+        
+        // Re-request status to sync state
+        sendCommand("GetStatus", "Mount");
+        
+        return true;
+    }
+    else
+    {
+        qDebug() << "Reconnection failed";
+        return false;
+    }
 }
 
 void OriginBackendSimple::disconnectFromTelescope()
@@ -376,6 +484,12 @@ bool OriginBackendSimple::setTracking(bool enabled)
 bool OriginBackendSimple::isTracking() const
 {
     return m_status.isTracking;
+}
+
+void OriginBackendSimple::setAutoReconnect(bool enable)
+{
+    m_autoReconnect = enable;
+    qDebug() << "Auto-reconnect" << (enable ? "enabled" : "disabled");
 }
 
 bool OriginBackendSimple::takeSnapshot(double exposure, int iso)

@@ -70,7 +70,13 @@ public:
 
 private:
     SimpleWebSocket *m_webSocket;
+    bool m_autoReconnect {true};
+    QString m_lastConnectedHost;
+    int m_lastConnectedPort {80};
     
+    bool reconnectWebSocket();
+    void setAutoReconnect(bool enable);
+  
     QString m_connectedHost;
     int m_connectedPort;
     bool m_connected;
