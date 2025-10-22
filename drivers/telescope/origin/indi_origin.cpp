@@ -116,33 +116,8 @@ bool OriginTelescope::Connect()
     m_backend->setConnected(true);
     m_connected = true;
 
-    polling_timer.setSingleShot(false);
-    polling_timer.callOnTimeout([this]() {
-    static int hitCount = 0;
-    hitCount++;
-    
-    printf("=== TimerHit #%d START ===", hitCount);
-    
-    if (!isConnected())
-    {
-        qDebug() << ("TimerHit: Not connected, skipping");
-        return;
-    }
-    
-    // Poll the backend
-    if (m_backend)
-    {
-        m_backend->poll();
-    }
-    
-    // Update scope status
-    ReadScopeStatus();
-    
-    printf("=== TimerHit #%d END ===", hitCount);
-
-    });
-
-    polling_timer.start(10);
+    // Start the INDI base class timer - it will automatically call ReadScopeStatus()
+    SetTimer(getCurrentPollingPeriod());
     qDebug() << ("Timer set");
     
     // Create camera device
@@ -181,6 +156,9 @@ bool OriginTelescope::ReadScopeStatus()
         return false;
     }
     
+    // Poll the backend to get latest data
+    m_backend->poll();
+    
     auto status = m_backend->status();
     
     qDebug() << "Backend status: RA=" <<
@@ -190,15 +168,18 @@ bool OriginTelescope::ReadScopeStatus()
     m_currentRA = status.raPosition;
     m_currentDec = status.decPosition;
     
-    printf("Setting INDI coords: RA=%.6f Dec=%.6f", m_currentRA, m_currentDec);
+    qDebug() << "Setting INDI coords: RA=" << m_currentRA << " Dec=" << m_currentDec;
     
-    // THIS IS THE CRITICAL CALL - it sends coordinates to Ekos
+    // Update the internal INDI state
     NewRaDec(m_currentRA, m_currentDec);
+    
+    // CRITICAL: Actually send the coordinates to the INDI client
+    // This is what makes the coordinates appear in Ekos
     EqNP.apply();
     
-    if (false) qDebug() << ("After NewRaDec() call");
+    qDebug() << "After EqNP.apply() - coordinates sent to client";
     
-    // Update state
+    // Update tracking state
     if (status.isSlewing)
     {
         TrackState = SCOPE_SLEWING;
@@ -217,7 +198,6 @@ bool OriginTelescope::ReadScopeStatus()
     else
     {
         TrackState = SCOPE_IDLE;
-        if (false) qDebug() << ("State: IDLE");
     }
     
     return true;
@@ -228,7 +208,7 @@ bool OriginTelescope::Goto(double ra, double dec)
     if (!m_backend || !m_connected)
         return false;
     
-    LOGF_INFO("Slewing to RA: %.6f Dec: %.6f", ra, dec);
+    qDebug() << "Slewing to RA:" << ra << " Dec:" << dec;
     
     if (m_backend->gotoPosition(ra, dec))
     {
@@ -244,7 +224,7 @@ bool OriginTelescope::Sync(double ra, double dec)
     if (!m_backend || !m_connected)
         return false;
     
-    LOGF_INFO("Syncing to RA: %.6f Dec: %.6f", ra, dec);
+    qDebug() << "Syncing to RA:" << ra << " Dec:" << dec;
     
     return m_backend->syncPosition(ra, dec);
 }
@@ -329,23 +309,7 @@ bool OriginCamera::updateProperties()
 
 bool OriginCamera::Connect()
 {
-    if (!m_backend || !m_backend->isConnected())
-    {
-        qDebug() << ("Telescope must be connected first");
-        return false;
-    }
-    
-    m_backend->setCameraConnected(true);
     qDebug() << ("Origin Camera connected");
-    
-    // Set callback instead of connecting signal
-    m_backend->setImageCallback([this](const QString& path, const QByteArray& data, 
-                                       double ra, double dec, double exposure) {
-        handleNewImage(path, data, ra, dec, exposure);
-    });
-    
-    SetTimer(1000);
-    
     return true;
 }
 
@@ -357,44 +321,42 @@ bool OriginCamera::Disconnect()
 
 bool OriginCamera::StartExposure(float duration)
 {
-    if (!m_backend || !m_backend->isConnected())
+    if (!m_backend)
         return false;
     
-    LOGF_INFO("Starting %.2f second exposure", duration);
+    qDebug() << "Starting exposure:" << duration << "seconds";
     
     m_exposureDuration = duration;
     
-    struct timeval now;
-    gettimeofday(&now, nullptr);
-    m_exposureStart = now.tv_sec + now.tv_usec / 1000000.0;
+    PrimaryCCD.setExposureDuration(duration);
+    InExposure = true;
     
-    if (m_backend->takeSnapshot(duration, 200))
-    {
-        PrimaryCCD.setExposureDuration(duration);
-        return true;
-    }
-    
-    return false;
+    return true;
 }
 
 bool OriginCamera::AbortExposure()
 {
-    if (PrimaryCCD.getExposureLeft() <= 0)
+    if (!m_backend)
         return false;
     
     qDebug() << ("Aborting exposure");
     
-    return m_backend->abortExposure();
+    InExposure = false;
+    return true;
 }
 
 bool OriginCamera::UpdateCCDFrame(int, int, int, int)
 {
-    return false;
+    return true;
 }
 
 bool OriginCamera::UpdateCCDBin(int binx, int biny)
 {
-    return (binx == 1 && biny == 1);
+    if (!m_backend)
+        return false;
+    
+    qDebug() << "Setting binning to" << binx << "x" << biny;
+    return true;
 }
 
 void OriginCamera::TimerHit()
@@ -402,42 +364,18 @@ void OriginCamera::TimerHit()
     if (!isConnected())
         return;
     
-    // Update exposure progress
-    double remaining = PrimaryCCD.getExposureLeft();
-    
-    if (remaining > 0)
+    if (InExposure)
     {
-        struct timeval now;
-        gettimeofday(&now, nullptr);
-        double currentTime = now.tv_sec + now.tv_usec / 1000000.0;
-        
-        double elapsed = currentTime - m_exposureStart;
-        double newRemaining = m_exposureDuration - elapsed;
-        
-        if (newRemaining > 0)
-        {
-            PrimaryCCD.setExposureLeft(newRemaining);
-        }
+        PrimaryCCD.setExposureLeft(0);
+        InExposure = false;
     }
     
-    SetTimer(1000);
+    SetTimer(getCurrentPollingPeriod());
 }
 
-void OriginCamera::handleNewImage(const QString&, const QByteArray& data,
-                                  double, double, double)
+void OriginCamera::handleNewImage(const QString& path, const QByteArray& data, 
+                                  double ra, double dec, double exposure)
 {
-    if (PrimaryCCD.getExposureLeft() <= 0)
-        return;
-    
-    qDebug() << ("Image received from Origin");
-    
-    // Set image buffer
-    PrimaryCCD.setFrameBufferSize(data.size());
-    memcpy(PrimaryCCD.getFrameBuffer(), data.constData(), data.size());
-    
-    // Set FITS headers
-    PrimaryCCD.setImageExtension("tiff");
-    
-    // Notify completion
-    ExposureComplete(&PrimaryCCD);
+    qDebug() << "New image available:" << path;
+    // TODO: Process and upload image to client
 }

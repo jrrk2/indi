@@ -37,7 +37,9 @@ private:
     double m_currentRA {0};
     double m_currentDec {0};
     bool m_connected {false};
-    INDI::Timer polling_timer;
+    
+    // REMOVED: INDI::Timer polling_timer;
+    // We're using the base class timer mechanism instead
 };
 
 class OriginCamera : public INDI::CCD
