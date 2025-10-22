@@ -47,7 +47,7 @@ class OriginCamera : public INDI::CCD
 {
 public:
     OriginCamera(OriginBackendSimple *backend);
-    virtual ~OriginCamera() = default;
+    virtual ~OriginCamera();
 
     virtual const char *getDefaultName() override;
     virtual bool initProperties() override;
@@ -67,17 +67,18 @@ private:
     double m_exposureStart {0};
     double m_exposureDuration {0};
     
-    // Image callback support - store simple data from callback
+    // Image callback support - backend downloads the image and passes it to us
     bool m_imageReady {false};
     QString m_pendingImagePath;
+    QByteArray m_pendingImageData;  // The actual image data from backend
     double m_pendingImageRA {0};
     double m_pendingImageDec {0};
     
-    // Callback handler for when backend notifies us of new image
-    void onImageReady(const QString& filePath, double ra, double dec);
+    // Callback handler - backend already downloaded the image!
+    void onImageReady(const QString& filePath, const QByteArray& imageData,
+                     double ra, double dec);
     
     // Helper methods
-    bool downloadImage();
     bool processAndUploadImage(const QByteArray& imageData);
     double currentTime();
     
