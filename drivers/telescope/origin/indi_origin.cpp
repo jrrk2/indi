@@ -303,20 +303,6 @@ const char *OriginCamera::getDefaultName()
     return "Origin Camera";
 }
 
-bool OriginCamera::initProperties()
-{
-    INDI::CCD::initProperties();
-    
-    SetCCDCapability(CCD_CAN_ABORT);
-    
-    // Origin camera specs
-    SetCCDParams(4144, 2822, 16, 3.76, 3.76);
-    
-    addDebugControl();
-    
-    return true;
-}
-
 bool OriginCamera::updateProperties()
 {
     INDI::CCD::updateProperties();
@@ -470,90 +456,108 @@ double OriginCamera::currentTime()
     return tv.tv_sec + tv.tv_usec / 1000000.0;
 }
 
+bool OriginCamera::initProperties()
+{
+    INDI::CCD::initProperties();
+    
+    SetCCDCapability(CCD_CAN_ABORT);
+    
+    // Origin camera dimensions in snapshot mode
+    SetCCDParams(3056, 2048, 16, 3.76, 3.76);
+    
+    addDebugControl();
+    
+    return true;
+}
+
 bool OriginCamera::processAndUploadImage(const QByteArray& imageData)
 {
-    qDebug() << "Processing image data:" << imageData.size() << "bytes";
+    qDebug() << "Processing 16-bit RGB TIFF:" << imageData.size() << "bytes";
     
-    // Use QImage to load the TIFF file
+    // Load the RGB TIFF
     QImage qImage;
     if (!qImage.loadFromData(imageData, "TIFF"))
     {
-        qDebug() << "Failed to load TIFF image";
+        qDebug() << "Failed to load TIFF";
         return false;
     }
-    
-    qDebug() << "TIFF loaded: width=" << qImage.width() 
-             << "height=" << qImage.height() 
-             << "format=" << qImage.format();
     
     int width = qImage.width();
     int height = qImage.height();
     
-    // Allocate INDI buffer
+    qDebug() << "TIFF loaded:" << width << "x" << height << "format:" << qImage.format();
+    
+    // Convert to a format we can work with
+    QImage rgbImage;
+    if (qImage.format() == QImage::Format_RGBX64)
+    {
+        // 16-bit RGBX - use directly but skip alpha
+        rgbImage = qImage;
+    }
+    else
+    {
+        // Convert to RGB format
+        rgbImage = qImage.convertToFormat(QImage::Format_RGB888);
+    }
+    
+    // Set up for 3-axis FITS (RGB cube)
     PrimaryCCD.setFrame(0, 0, width, height);
-    PrimaryCCD.setFrameBufferSize(width * height * sizeof(uint16_t));
+    PrimaryCCD.setExposureDuration(m_exposureDuration);
+    
+    // CRITICAL: Set to 3 axes for RGB
+    PrimaryCCD.setNAxis(3);
+    
+    // Allocate buffer: width * height * 3 channels * 16-bit
+    int planeSize = width * height;
+    PrimaryCCD.setFrameBufferSize(planeSize * 3 * sizeof(uint16_t));
     
     uint16_t *image = (uint16_t *)PrimaryCCD.getFrameBuffer();
     
-    // Convert QImage to 16-bit grayscale
-    // Origin likely sends RGB or grayscale TIFF
-    
-    if (qImage.format() == QImage::Format_Grayscale8 || 
-        qImage.format() == QImage::Format_Indexed8)
+    // Convert to planar RGB format: RRRR...GGGG...BBBB
+    if (qImage.format() == QImage::Format_RGBX64)
     {
-        // 8-bit grayscale - convert to 16-bit
-        qDebug() << "Converting 8-bit grayscale to 16-bit";
+        qDebug() << "Converting RGBX64 to 3-plane 16-bit RGB";
+        
         for (int y = 0; y < height; y++)
         {
-            const uchar *line = qImage.constScanLine(y);
+            const QRgba64 *line = (const QRgba64 *)qImage.constScanLine(y);
             for (int x = 0; x < width; x++)
             {
-                // Scale 8-bit (0-255) to 16-bit (0-65535)
-                image[y * width + x] = line[x] * 257; // 257 = 65535/255
+                int idx = y * width + x;
+                QRgba64 pixel = line[x];
+                
+                image[idx] = pixel.red();                      // R plane
+                image[planeSize + idx] = pixel.green();        // G plane
+                image[planeSize * 2 + idx] = pixel.blue();     // B plane
             }
-        }
-    }
-    else if (qImage.format() == QImage::Format_Grayscale16)
-    {
-        // 16-bit grayscale - direct copy
-        qDebug() << "Copying 16-bit grayscale directly";
-        for (int y = 0; y < height; y++)
-        {
-            const uint16_t *line = (const uint16_t *)qImage.constScanLine(y);
-            memcpy(&image[y * width], line, width * sizeof(uint16_t));
         }
     }
     else
     {
-        // RGB or other format - convert to grayscale
-        qDebug() << "Converting RGB to grayscale";
-        QImage grayImage = qImage.convertToFormat(QImage::Format_Grayscale8);
+        qDebug() << "Converting RGB888 to 3-plane 16-bit RGB";
         
         for (int y = 0; y < height; y++)
         {
-            const uchar *line = grayImage.constScanLine(y);
+            const uchar *line = rgbImage.constScanLine(y);
             for (int x = 0; x < width; x++)
             {
-                image[y * width + x] = line[x] * 257;
+                int idx = y * width + x;
+                int pixelIdx = x * 3;
+                
+                // Scale 8-bit to 16-bit
+                image[idx] = line[pixelIdx] * 257;                    // R plane
+                image[planeSize + idx] = line[pixelIdx + 1] * 257;    // G plane
+                image[planeSize * 2 + idx] = line[pixelIdx + 2] * 257; // B plane
             }
         }
     }
     
-    qDebug() << "Image conversion complete";
+    qDebug() << "Converted to 3-axis RGB FITS format";
     
-    // Set FITS header info
-    PrimaryCCD.setExposureDuration(m_exposureDuration);
-    
-    // Add WCS info if available
-    if (m_pendingImageRA > 0 && m_pendingImageDec != 0)
-    {
-        qDebug() << "Image coordinates: RA=" << m_pendingImageRA 
-                 << "Dec=" << m_pendingImageDec;
-        // TODO: Add RA/Dec to FITS header
-    }
-    
-    // Send the image to the client
+    // Send the RGB image to Ekos
     ExposureComplete(&PrimaryCCD);
+    
+    qDebug() << "3-axis RGB FITS sent to Ekos";
     
     return true;
 }
