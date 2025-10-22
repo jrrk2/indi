@@ -7,7 +7,9 @@
 #include <sys/time.h>
 #include <unistd.h>
 #include <stdio.h>
-#include <QImage>
+#include <tiffio.h>
+#include <cstring>
+#include <QFile>
 
 #warning "compiling indi_origin.cpp"
 
@@ -472,92 +474,114 @@ bool OriginCamera::initProperties()
 
 bool OriginCamera::processAndUploadImage(const QByteArray& imageData)
 {
-    qDebug() << "Processing 16-bit RGB TIFF:" << imageData.size() << "bytes";
+    qDebug() << "Processing 16-bit RGB TIFF with libtiff:" << imageData.size() << "bytes";
     
-    // Load the RGB TIFF
-    QImage qImage;
-    if (!qImage.loadFromData(imageData, "TIFF"))
+    // Write TIFF data to a temporary file for libtiff to read
+    // (libtiff can also read from memory but file is simpler)
+    QString tempPath = QString("/tmp/origin_temp_%1.tiff").arg(QDateTime::currentMSecsSinceEpoch());
+    QFile tempFile(tempPath);
+    if (!tempFile.open(QIODevice::WriteOnly))
     {
-        qDebug() << "Failed to load TIFF";
+        qDebug() << "Failed to create temp file";
+        return false;
+    }
+    tempFile.write(imageData);
+    tempFile.close();
+    
+    // Open TIFF with libtiff
+    TIFF* tif = TIFFOpen(tempPath.toUtf8().constData(), "r");
+    if (!tif)
+    {
+        qDebug() << "Failed to open TIFF with libtiff";
+        QFile::remove(tempPath);
         return false;
     }
     
-    int width = qImage.width();
-    int height = qImage.height();
+    // Read TIFF properties
+    uint32_t width, height;
+    uint16_t samplesperpixel, bitspersample, photometric, config;
     
-    qDebug() << "TIFF loaded:" << width << "x" << height << "format:" << qImage.format();
+    TIFFGetField(tif, TIFFTAG_IMAGEWIDTH, &width);
+    TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &height);
+    TIFFGetField(tif, TIFFTAG_SAMPLESPERPIXEL, &samplesperpixel);
+    TIFFGetField(tif, TIFFTAG_BITSPERSAMPLE, &bitspersample);
+    TIFFGetField(tif, TIFFTAG_PHOTOMETRIC, &photometric);
+    TIFFGetField(tif, TIFFTAG_PLANARCONFIG, &config);
     
-    // Convert to a format we can work with
-    QImage rgbImage;
-    if (qImage.format() == QImage::Format_RGBX64)
+    qDebug() << "TIFF properties: width=" << width << "height=" << height
+             << "samples=" << samplesperpixel << "bits=" << bitspersample
+             << "photometric=" << photometric << "planar=" << config;
+    
+    if (samplesperpixel != 3 || bitspersample != 16)
     {
-        // 16-bit RGBX - use directly but skip alpha
-        rgbImage = qImage;
-    }
-    else
-    {
-        // Convert to RGB format
-        rgbImage = qImage.convertToFormat(QImage::Format_RGB888);
+        qDebug() << "Unexpected TIFF format";
+        TIFFClose(tif);
+        QFile::remove(tempPath);
+        return false;
     }
     
     // Set up for 3-axis FITS (RGB cube)
     PrimaryCCD.setFrame(0, 0, width, height);
     PrimaryCCD.setExposureDuration(m_exposureDuration);
-    
-    // CRITICAL: Set to 3 axes for RGB
     PrimaryCCD.setNAxis(3);
     
-    // Allocate buffer: width * height * 3 channels * 16-bit
+    // Allocate buffer
     int planeSize = width * height;
     PrimaryCCD.setFrameBufferSize(planeSize * 3 * sizeof(uint16_t));
-    
     uint16_t *image = (uint16_t *)PrimaryCCD.getFrameBuffer();
     
-    // Convert to planar RGB format: RRRR...GGGG...BBBB
-    if (qImage.format() == QImage::Format_RGBX64)
+    // Allocate scanline buffer
+    uint16_t *scanline = (uint16_t *)_TIFFmalloc(TIFFScanlineSize(tif));
+    
+    if (!scanline)
     {
-        qDebug() << "Converting RGBX64 to 3-plane 16-bit RGB";
-        
-        for (int y = 0; y < height; y++)
-        {
-            const QRgba64 *line = (const QRgba64 *)qImage.constScanLine(y);
-            for (int x = 0; x < width; x++)
-            {
-                int idx = y * width + x;
-                QRgba64 pixel = line[x];
-                
-                image[idx] = pixel.red();                      // R plane
-                image[planeSize + idx] = pixel.green();        // G plane
-                image[planeSize * 2 + idx] = pixel.blue();     // B plane
-            }
-        }
+        qDebug() << "Failed to allocate scanline buffer";
+        TIFFClose(tif);
+        QFile::remove(tempPath);
+        return false;
     }
-    else
+    
+    // Read TIFF data line by line and convert to planar RGB
+    qDebug() << "Reading TIFF data...";
+    
+    for (uint32_t row = 0; row < height; row++)
     {
-        qDebug() << "Converting RGB888 to 3-plane 16-bit RGB";
-        
-        for (int y = 0; y < height; y++)
+        if (TIFFReadScanline(tif, scanline, row) < 0)
         {
-            const uchar *line = rgbImage.constScanLine(y);
-            for (int x = 0; x < width; x++)
-            {
-                int idx = y * width + x;
-                int pixelIdx = x * 3;
-                
-                // Scale 8-bit to 16-bit
-                image[idx] = line[pixelIdx] * 257;                    // R plane
-                image[planeSize + idx] = line[pixelIdx + 1] * 257;    // G plane
-                image[planeSize * 2 + idx] = line[pixelIdx + 2] * 257; // B plane
-            }
+            qDebug() << "Error reading scanline" << row;
+            break;
+        }
+        
+        // Convert interleaved RGB to planar RGB
+        // scanline format: R0 G0 B0 R1 G1 B1 R2 G2 B2 ...
+        // output format: R0 R1 R2 ... G0 G1 G2 ... B0 B1 B2 ...
+        for (uint32_t col = 0; col < width; col++)
+        {
+            int idx = row * width + col;
+            int scanIdx = col * 3;
+            
+            image[idx] = scanline[scanIdx];                    // R plane
+            image[planeSize + idx] = scanline[scanIdx + 1];    // G plane
+            image[planeSize * 2 + idx] = scanline[scanIdx + 2]; // B plane
         }
     }
     
-    qDebug() << "Converted to 3-axis RGB FITS format";
+    // Cleanup
+    _TIFFfree(scanline);
+    TIFFClose(tif);
+    //    QFile::remove(tempPath);
+    qDebug() << "TIFF file left in: " << tempPath;
     
-    // Send the RGB image to Ekos
+    // Sample center pixel to verify
+    int centerIdx = (height / 2) * width + (width / 2);
+    qDebug() << "Center pixel values: R=" << image[centerIdx] 
+             << "G=" << image[planeSize + centerIdx]
+             << "B=" << image[planeSize*2 + centerIdx];
+    
+    qDebug() << "3-axis RGB FITS ready, sending to Ekos";
+    
+    // Send to Ekos
     ExposureComplete(&PrimaryCCD);
-    
-    qDebug() << "3-axis RGB FITS sent to Ekos";
     
     return true;
 }

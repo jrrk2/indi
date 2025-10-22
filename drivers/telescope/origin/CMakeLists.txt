@@ -10,6 +10,7 @@ set(CMAKE_AUTOMOC ON)
 find_package(Qt5 COMPONENTS Core Network Gui REQUIRED)  # Removed WebSockets
 find_package(Threads REQUIRED)
 find_package(OpenSSL REQUIRED)  # ADD for base64 encoding
+find_package(TIFF REQUIRED)
 
 set(ORIGIN_SRCS
     indi_origin.cpp
@@ -29,6 +30,7 @@ add_executable(indi_origin_telescope ${ORIGIN_SRCS} ${ORIGIN_MOC_SRCS})
 target_link_libraries(indi_origin_telescope
     ${INDI_LIBRARIES}
     indidriver
+    ${TIFF_LIBRARIES}
     Qt5::Core
     Qt5::Network
     Qt5::Gui
