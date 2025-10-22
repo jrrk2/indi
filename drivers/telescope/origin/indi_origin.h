@@ -3,6 +3,7 @@
 #include <inditelescope.h>
 #include <indiccd.h>
 #include <memory>
+#include "TelescopeData.hpp"
 
 class OriginBackendSimple;  // Forward declaration
 
@@ -65,6 +66,20 @@ private:
     OriginBackendSimple *m_backend;
     double m_exposureStart {0};
     double m_exposureDuration {0};
+    
+    // Image callback support - store simple data from callback
+    bool m_imageReady {false};
+    QString m_pendingImagePath;
+    double m_pendingImageRA {0};
+    double m_pendingImageDec {0};
+    
+    // Callback handler for when backend notifies us of new image
+    void onImageReady(const QString& filePath, double ra, double dec);
+    
+    // Helper methods
+    bool downloadImage();
+    bool processAndUploadImage(const QByteArray& imageData);
+    double currentTime();
     
     void handleNewImage(const QString& path, const QByteArray& data, 
                        double ra, double dec, double exposure);

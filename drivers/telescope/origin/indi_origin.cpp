@@ -276,12 +276,6 @@ bool OriginTelescope::ISNewText(const char *dev, const char *name, char *texts[]
 // CAMERA IMPLEMENTATION
 //=============================================================================
 
-OriginCamera::OriginCamera(OriginBackendSimple *backend)
-    : m_backend(backend)
-{
-    setVersion(1, 0);
-}
-
 const char *OriginCamera::getDefaultName()
 {
     return "Origin Camera";
@@ -318,6 +312,89 @@ bool OriginCamera::Disconnect()
     qDebug() << ("Origin Camera disconnected");
     return true;
 }
+//=============================================================================
+// CAMERA IMPLEMENTATION - Using callback mechanism
+//=============================================================================
+
+// Add to OriginCamera constructor
+OriginCamera::OriginCamera(OriginBackendSimple *backend)
+    : m_backend(backend)
+{
+    setVersion(1, 0);
+    
+    // Set up the image callback to be notified when images are ready
+    if (m_backend)
+    {
+        m_backend->setImageCallback([this](const ImageInfo& info) {
+            this->onImageReady(info);
+        });
+    }
+}
+
+// This is called by the backend when an image notification arrives
+void OriginCamera::onImageReady(const ImageInfo& info)
+{
+    qDebug() << "Image ready callback received:" << info.fileLocation;
+    
+    m_pendingImageInfo = info;
+    m_imageReady = true;
+    
+    // If we're in exposure, the TimerHit will handle the download
+    // If not in exposure, this might be a stray notification
+}
+
+bool OriginCamera::processAndUploadImage(const QByteArray& imageData)
+{
+    int width = 4144;
+    int height = 2822;
+    
+    // Allocate buffer
+    PrimaryCCD.setFrame(0, 0, width, height);
+    PrimaryCCD.setFrameBufferSize(width * height * sizeof(uint16_t));
+    
+    uint16_t *image = (uint16_t *)PrimaryCCD.getFrameBuffer();
+    
+    // TODO: Parse the actual image format (FITS, JPEG, etc.)
+    // For now, check if it's FITS or needs conversion
+    
+    if (imageData.startsWith("SIMPLE"))
+    {
+        // It's a FITS file - parse it
+        qDebug() << "Image is FITS format";
+        // TODO: Use a FITS library to parse
+        // For now, just copy raw data (placeholder)
+        memcpy(image, imageData.data(), std::min((size_t)imageData.size(), 
+                                                  width * height * sizeof(uint16_t)));
+    }
+    else
+    {
+        // Might be JPEG or other format
+        qDebug() << "Image appears to be non-FITS format, needs conversion";
+        // TODO: Convert JPEG/PNG to 16-bit grayscale
+        
+        // For testing, create a test pattern
+        for (int i = 0; i < width * height; i++)
+        {
+            image[i] = (i % 65536);
+        }
+    }
+    
+    // Set FITS header info
+    PrimaryCCD.setExposureDuration(m_exposureDuration);
+    
+    // Add WCS info if available
+    if (m_pendingImageInfo.ra > 0 && m_pendingImageInfo.dec > 0)
+    {
+        // TODO: Add RA/Dec to FITS header
+        qDebug() << "Image coordinates: RA=" << m_pendingImageInfo.ra 
+                 << "Dec=" << m_pendingImageInfo.dec;
+    }
+    
+    // Send the image to the client
+    ExposureComplete(&PrimaryCCD);
+    
+    return true;
+}
 
 bool OriginCamera::StartExposure(float duration)
 {
@@ -326,9 +403,18 @@ bool OriginCamera::StartExposure(float duration)
     
     qDebug() << "Starting exposure:" << duration << "seconds";
     
+    // Actually tell the Origin telescope to take a snapshot!
+    if (!m_backend->takeSnapshot(duration, 100))
+    {
+        qDebug() << "Failed to send takeSnapshot command to telescope";
+        return false;
+    }
+    
     m_exposureDuration = duration;
+    m_exposureStart = currentTime();  // Record when we started
     
     PrimaryCCD.setExposureDuration(duration);
+    PrimaryCCD.setExposureLeft(duration);  // Set initial countdown
     InExposure = true;
     
     return true;
@@ -339,9 +425,13 @@ bool OriginCamera::AbortExposure()
     if (!m_backend)
         return false;
     
-    qDebug() << ("Aborting exposure");
+    qDebug() << "Aborting exposure";
     
     InExposure = false;
+    
+    // Tell the telescope to abort if there's an abort command
+    // m_backend->abortExposure();  // Add this if you have it
+    
     return true;
 }
 
@@ -356,6 +446,10 @@ bool OriginCamera::UpdateCCDBin(int binx, int biny)
         return false;
     
     qDebug() << "Setting binning to" << binx << "x" << biny;
+    
+    // Tell the backend to set binning
+    // m_backend->setBinning(binx, biny);  // Add this if you have it
+    
     return true;
 }
 
@@ -366,16 +460,105 @@ void OriginCamera::TimerHit()
     
     if (InExposure)
     {
-        PrimaryCCD.setExposureLeft(0);
-        InExposure = false;
+        // Calculate elapsed time
+        double elapsed = currentTime() - m_exposureStart;
+        double remaining = m_exposureDuration - elapsed;
+        
+        if (remaining <= 0)
+        {
+            qDebug() << "Exposure complete, waiting for image download...";
+            
+            // Check if image is ready from backend
+            auto data = m_backend->getData();
+            if (!data.lastImage.fileLocation.isEmpty())
+            {
+                qDebug() << "Image available at:" << data.lastImage.fileLocation;
+                
+                // Download and process the image
+                if (downloadImage())
+                {
+                    qDebug() << "Image downloaded and sent to client";
+                }
+                else
+                {
+                    qDebug() << "Failed to download image";
+                    PrimaryCCD.setExposureFailed();
+                }
+                
+                InExposure = false;
+            }
+            else
+            {
+                // Image not ready yet, keep waiting
+                qDebug() << "Waiting for image from telescope...";
+            }
+        }
+        else
+        {
+            // Update exposure countdown
+            PrimaryCCD.setExposureLeft(remaining);
+        }
     }
     
     SetTimer(getCurrentPollingPeriod());
 }
 
+// Helper function to get current time in seconds
+double OriginCamera::currentTime()
+{
+    struct timeval tv;
+    gettimeofday(&tv, nullptr);
+    return tv.tv_sec + tv.tv_usec / 1000000.0;
+}
+
+// Download and process the image
+bool OriginCamera::downloadImage()
+{
+    if (!m_backend)
+        return false;
+    
+    auto data = m_backend->getData();
+    
+    if (data.lastImage.fileLocation.isEmpty())
+    {
+        qDebug() << "No image location available";
+        return false;
+    }
+    
+    qDebug() << "Downloading image from:" << data.lastImage.fileLocation;
+    
+    // TODO: Download the actual image file via HTTP
+    // For now, just create a dummy image to test the flow
+    
+    int width = 4144;
+    int height = 2822;
+    
+    // Allocate buffer
+    PrimaryCCD.setFrame(0, 0, width, height);
+    PrimaryCCD.setFrameBufferSize(width * height * sizeof(uint16_t));
+    
+    uint16_t *image = (uint16_t *)PrimaryCCD.getFrameBuffer();
+    
+    // TODO: Replace this with actual image download and conversion
+    // For testing, fill with a test pattern
+    for (int i = 0; i < width * height; i++)
+    {
+        image[i] = (i % 65536);  // Test pattern
+    }
+    
+    // Set FITS header info
+    PrimaryCCD.setExposureDuration(m_exposureDuration);
+    
+    // Send the image to the client
+    ExposureComplete(&PrimaryCCD);
+    
+    return true;
+}
+
 void OriginCamera::handleNewImage(const QString& path, const QByteArray& data, 
                                   double ra, double dec, double exposure)
 {
-    qDebug() << "New image available:" << path;
-    // TODO: Process and upload image to client
+    qDebug() << "New image notification received:" << path;
+    // This is called when the backend detects a new image notification
+    // The actual download happens in TimerHit when exposure is complete
 }
