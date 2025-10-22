@@ -354,7 +354,7 @@ bool OriginCamera::StartExposure(float duration)
     m_pendingImageData.clear();
     
     // Tell the Origin telescope to take a snapshot!
-    if (!m_backend->takeSnapshot(0.001, 100))
+    if (!m_backend->takeSnapshot(duration, 100))
     {
         qDebug() << "Failed to send takeSnapshot command to telescope";
         return false;
@@ -466,6 +466,12 @@ bool OriginCamera::initProperties()
     
     // Origin camera dimensions in snapshot mode
     SetCCDParams(3056, 2048, 16, 3.76, 3.76);
+    
+    // CRITICAL: Set the exposure range with 1 microsecond resolution
+    // Min: 1 microsecond (0.000001s)
+    // Max: 1 hour (3600s)
+    // Step: 1 microsecond (0.000001s)
+    PrimaryCCD.setMinMaxStep("CCD_EXPOSURE", "CCD_EXPOSURE_VALUE", 0.000001, 3600, 0.000001, false);
     
     addDebugControl();
     
