@@ -61,27 +61,41 @@ protected:
     virtual bool UpdateCCDFrame(int, int, int, int) override;
     virtual bool UpdateCCDBin(int binx, int biny) override;
     virtual void TimerHit() override;
+    
+    // Only need this for the preview/full mode switch
+    virtual bool ISNewSwitch(const char *dev, const char *name, ISState *states, 
+                            char *names[], int n) override;
+    virtual bool saveConfigItems(FILE *fp) override;
+    virtual void addFITSKeywords(INDI::CCDChip *targetChip, std::vector<INDI::FITSRecord> &fitsKeyword) override;
 
 private:
     OriginBackendSimple *m_backend;
     double m_exposureStart {0};
     double m_exposureDuration {0};
     
-    // Image callback support - backend downloads the image and passes it to us
+    // Image callback support
     bool m_imageReady {false};
     QString m_pendingImagePath;
-    QByteArray m_pendingImageData;  // The actual image data from backend
+    QByteArray m_pendingImageData;
     double m_pendingImageRA {0};
     double m_pendingImageDec {0};
     
-    // Callback handler - backend already downloaded the image!
+    // State flags
+    bool m_waitingForImage {false};
+    bool m_useNextImage {false};
+
+    // Gain/ISO property - like the simulator
+    INDI::PropertyNumber GainNP {1};
+    enum { GAIN };    
+
+    // Preview/Full mode property
+    INDI::PropertySwitch StreamSP {2};
+    enum { STREAM_PREVIEW, STREAM_FULL };
+    bool m_isPreviewMode {false};
+    
+    // Methods
     void onImageReady(const QString& filePath, const QByteArray& imageData,
                      double ra, double dec);
-    
-    // Helper methods
     bool processAndUploadImage(const QByteArray& imageData);
     double currentTime();
-    
-    void handleNewImage(const QString& path, const QByteArray& data, 
-                       double ra, double dec, double exposure);
 };

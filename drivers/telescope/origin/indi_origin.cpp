@@ -308,6 +308,18 @@ const char *OriginCamera::getDefaultName()
 bool OriginCamera::updateProperties()
 {
     INDI::CCD::updateProperties();
+    
+    if (isConnected())
+    {
+        defineProperty(GainNP);
+        defineProperty(StreamSP);
+    }
+    else
+    {
+        deleteProperty(GainNP);
+        deleteProperty(StreamSP);
+    }
+    
     return true;
 }
 
@@ -325,20 +337,47 @@ bool OriginCamera::Disconnect()
     return true;
 }
 
-// This is called by the backend when image is downloaded
-void OriginCamera::onImageReady(const QString& filePath, const QByteArray& imageData, 
+
+void OriginCamera::onImageReady(const QString& filePath, const QByteArray& imageData,
                                  double ra, double dec)
 {
     qDebug() << "Image ready callback received:" << filePath 
              << "Size:" << imageData.size() << "bytes";
     
+    // Check if this is a preview or full capture based on filename
+    bool isPreview = filePath.contains("jpg", Qt::CaseInsensitive);
+    
+    qDebug() << "Image type:" << (isPreview ? "Preview" : "Full capture");
+    
+    // If we're not in exposure or waiting for an image, ignore it
+    if (!InExposure && !m_useNextImage)
+    {
+        qDebug() << "Ignoring unsolicited image (not in exposure)";
+        return;
+    }
+    
+    // If we're in preview mode, accept previews
+    // If we're in full mode, only accept full captures
+    if (m_isPreviewMode && !isPreview)
+    {
+        qDebug() << "Ignoring full capture (preview mode active)";
+        return;
+    }
+    
+    if (!m_isPreviewMode && isPreview)
+    {
+        qDebug() << "Ignoring preview (full mode active, waiting for full capture)";
+        return;
+    }
+    
+    // This is the image we want!
     m_pendingImagePath = filePath;
     m_pendingImageData = imageData;
     m_pendingImageRA = ra;
     m_pendingImageDec = dec;
     m_imageReady = true;
     
-    // If we're in exposure, the TimerHit will handle processing and uploading
+    qDebug() << "Image accepted for processing";
 }
 
 bool OriginCamera::StartExposure(float duration)
@@ -348,15 +387,38 @@ bool OriginCamera::StartExposure(float duration)
     
     qDebug() << "Starting exposure:" << duration << "seconds";
     
-    // Clear any previous image ready flag
+    // Clear previous state
     m_imageReady = false;
     m_pendingImagePath.clear();
     m_pendingImageData.clear();
+    m_waitingForImage = true;
+    m_useNextImage = true;
     
-    // Tell the Origin telescope to take a snapshot!
-    if (!m_backend->takeSnapshot(duration, 100))
+    // Get the ISO value from INDI's built-in Gain property
+    int iso = GainNP[0].getValue();
+    
+    qDebug() << "Using ISO:" << iso << "Mode:" << (m_isPreviewMode ? "Preview" : "Full");
+    
+    bool success;
+    
+    if (m_isPreviewMode)
     {
-        qDebug() << "Failed to send takeSnapshot command to telescope";
+        // Preview mode - wait for next preview image Origin sends automatically
+        qDebug() << "Preview mode: waiting for next preview image...";
+        success = true;
+    }
+    else
+    {
+        // Full resolution capture
+        success = m_backend->takeSnapshot(duration, iso);
+        qDebug() << "Full mode: triggered snapshot capture";
+    }
+    
+    if (!success)
+    {
+        qDebug() << "Failed to send capture command";
+        m_waitingForImage = false;
+        m_useNextImage = false;
         return false;
     }
     
@@ -379,6 +441,8 @@ bool OriginCamera::AbortExposure()
     
     InExposure = false;
     m_imageReady = false;
+    m_waitingForImage = false;
+    m_useNextImage = false;
     m_pendingImageData.clear();
     
     return true;
@@ -405,45 +469,62 @@ void OriginCamera::TimerHit()
     
     if (InExposure)
     {
-        // Calculate elapsed time
-        double elapsed = currentTime() - m_exposureStart;
-        double remaining = m_exposureDuration - elapsed;
+        // In preview mode, accept the image as soon as it arrives
+        // In full mode, wait for both time elapsed AND image ready
+        bool canComplete = false;
         
-        if (remaining <= 0)
+        if (m_isPreviewMode)
         {
-            // Exposure time has elapsed
-            if (m_imageReady && !m_pendingImageData.isEmpty())
-            {
-                // Image data is ready to process!
-                qDebug() << "Exposure complete and image data ready, processing...";
-                
-                if (processAndUploadImage(m_pendingImageData))
-                {
-                    qDebug() << "Image processed and sent to client";
-                    InExposure = false;
-                    m_imageReady = false;
-                    m_pendingImageData.clear();
-                }
-                else
-                {
-                    qDebug() << "Failed to process image";
-                    PrimaryCCD.setExposureFailed();
-                    InExposure = false;
-                    m_imageReady = false;
-                    m_pendingImageData.clear();
-                }
-            }
-            else
-            {
-                // Exposure time done but image not ready yet, keep waiting
-	      if (false) qDebug() << "Exposure time complete, waiting for image from telescope...";
-                PrimaryCCD.setExposureLeft(0);
-            }
+            // Preview mode: complete as soon as we have an image
+            canComplete = m_imageReady && !m_pendingImageData.isEmpty();
         }
         else
         {
-            // Update exposure countdown
-            PrimaryCCD.setExposureLeft(remaining);
+            // Full mode: wait for exposure time AND image
+            double elapsed = currentTime() - m_exposureStart;
+            double remaining = m_exposureDuration - elapsed;
+            
+            if (remaining > 0)
+            {
+                // Still exposing
+                PrimaryCCD.setExposureLeft(remaining);
+            }
+            else
+            {
+                // Exposure time complete, check for image
+                PrimaryCCD.setExposureLeft(0);
+                canComplete = m_imageReady && !m_pendingImageData.isEmpty();
+                
+                if (!canComplete && false)
+                {
+                    qDebug() << "Exposure time complete, waiting for image...";
+                }
+            }
+        }
+        
+        if (canComplete)
+        {
+            qDebug() << "Exposure complete and image data ready, processing...";
+            
+            if (processAndUploadImage(m_pendingImageData))
+            {
+                qDebug() << "Image processed and sent to client";
+                InExposure = false;
+                m_imageReady = false;
+                m_waitingForImage = false;
+                m_useNextImage = false;
+                m_pendingImageData.clear();
+            }
+            else
+            {
+                qDebug() << "Failed to process image";
+                PrimaryCCD.setExposureFailed();
+                InExposure = false;
+                m_imageReady = false;
+                m_waitingForImage = false;
+                m_useNextImage = false;
+                m_pendingImageData.clear();
+            }
         }
     }
     
@@ -464,14 +545,25 @@ bool OriginCamera::initProperties()
     
     SetCCDCapability(CCD_CAN_ABORT);
     
-    // Origin camera dimensions in snapshot mode
+    // Origin camera dimensions
     SetCCDParams(3056, 2048, 16, 3.76, 3.76);
     
-    // CRITICAL: Set the exposure range with 1 microsecond resolution
-    // Min: 1 microsecond (0.000001s)
-    // Max: 1 hour (3600s)
-    // Step: 1 microsecond (0.000001s)
+    // Set exposure range with 1 microsecond resolution
     PrimaryCCD.setMinMaxStep("CCD_EXPOSURE", "CCD_EXPOSURE_VALUE", 0.000001, 3600, 0.000001, false);
+    
+    // Gain/ISO property - Origin supports 0-1600
+    // Match the simulator pattern exactly
+    GainNP[GAIN].fill("GAIN", "value", "%.f", 0, 1600, 1, 100);
+    //                                          ^  ^     ^  ^
+    //                                        min max  step default
+    
+    // Preview/Full mode property
+    StreamSP[STREAM_PREVIEW].fill("PREVIEW", "Preview (fast)", ISS_OFF);
+    StreamSP[STREAM_FULL].fill("FULL", "Full Resolution", ISS_ON);
+    StreamSP.fill(getDeviceName(), "STREAM_MODE", "Capture Mode", IMAGE_SETTINGS_TAB, 
+                  IP_RW, ISR_1OFMANY, 60, IPS_IDLE);
+    
+    m_isPreviewMode = false;
     
     addDebugControl();
     
@@ -592,13 +684,47 @@ bool OriginCamera::processAndUploadImage(const QByteArray& imageData)
     return true;
 }
 
-void OriginCamera::handleNewImage(const QString& path, const QByteArray& data, 
-                                  double ra, double dec, double exposure)
+bool OriginCamera::ISNewSwitch(const char *dev, const char *name, ISState *states, 
+                                char *names[], int n)
 {
-    // This method is not used - we use the callback in constructor instead
-    Q_UNUSED(path);
-    Q_UNUSED(data);
-    Q_UNUSED(ra);
-    Q_UNUSED(dec);
-    Q_UNUSED(exposure);
+    if (dev != nullptr && strcmp(dev, getDeviceName()) == 0)
+    {
+        // Handle Stream Mode changes
+        if (StreamSP.isNameMatch(name))
+        {
+            StreamSP.update(states, names, n);
+            
+            m_isPreviewMode = (StreamSP[STREAM_PREVIEW].getState() == ISS_ON);
+            
+            qDebug() << "Capture mode changed to:" << (m_isPreviewMode ? "PREVIEW" : "FULL");
+            
+            StreamSP.setState(IPS_OK);
+            StreamSP.apply();
+            
+            return true;
+        }
+    }
+    
+    return INDI::CCD::ISNewSwitch(dev, name, states, names, n);
 }
+
+bool OriginCamera::saveConfigItems(FILE *fp)
+{
+    INDI::CCD::saveConfigItems(fp);
+
+    // Gain
+    GainNP.save(fp);
+
+    // Save stream mode
+    StreamSP.save(fp);
+    
+    return true;
+}
+
+void OriginCamera::addFITSKeywords(INDI::CCDChip *targetChip, std::vector<INDI::FITSRecord> &fitsKeyword)
+{
+    INDI::CCD::addFITSKeywords(targetChip, fitsKeyword);
+
+    fitsKeyword.push_back({"GAIN", GainNP[0].getValue(), 3, "ISO"});
+}
+
