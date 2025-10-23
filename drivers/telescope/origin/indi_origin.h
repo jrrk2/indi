@@ -51,6 +51,8 @@ public:
     virtual const char *getDefaultName() override;
     virtual bool initProperties() override;
     virtual bool updateProperties() override;
+    // Add this method so telescope can give us the backend later
+    void setBackend(OriginBackendSimple *backend);
 
 protected:
     virtual bool Connect() override;

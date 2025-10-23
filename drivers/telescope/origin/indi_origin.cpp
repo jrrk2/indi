@@ -1,4 +1,5 @@
 #include "indi_origin.h"
+#include "OriginBackendSimple.hpp"
 #include <indicom.h>
 #include <memory>
 #include <cstring>
@@ -14,7 +15,7 @@
 
 // INDI requires these for driver registration
 std::unique_ptr<OriginTelescope> telescope(new OriginTelescope());
-std::unique_ptr<OriginCamera> camera(nullptr);
+std::unique_ptr<OriginCamera> camera(new OriginCamera(nullptr));
 
 //=============================================================================
 // TELESCOPE IMPLEMENTATION
@@ -157,16 +158,26 @@ void OriginTelescope::TimerHit()
 bool OriginTelescope::Connect()
 {
     qDebug() << ("=== Connect() START ===");
-    
-    // Create backend
-    m_backend = new OriginBackendSimple();
+
+    // Check if we have a telescope address
+    if (AddressT[0].text == nullptr || strlen(AddressT[0].text) == 0)
+    {
+      qDebug() << ("No telescope address found. Discovery may still be in progress.");
+      return false;
+    }
     
     // Get connection settings
     QString host = QString::fromUtf8(AddressT[0].text);
     int port = atoi(AddressT[1].text);
     
     qDebug() << "Connecting to " << host.toUtf8().constData() << ":" << port;
-    
+
+    // Create backend if needed
+    if (!m_backend)
+    {
+        m_backend = new OriginBackendSimple();
+    }
+        
     if (!m_backend->connectToTelescope(host, port))
     {
         qDebug() << ("Failed to connect to Origin Telescope");
@@ -186,7 +197,19 @@ bool OriginTelescope::Connect()
         camera->ISGetProperties(nullptr);
     }
     
+    // Set up status callback
+    m_backend->setStatusCallback([this]() {
+        // Status updated - will be read in ReadScopeStatus()
+    });
+    
     qDebug() << ("=== Connect() COMPLETE ===");
+
+    // Give the camera access to the backend NOW
+    if (camera)
+    {
+        camera->setBackend(m_backend);
+    }
+
     return true;
 }
 
@@ -338,21 +361,27 @@ OriginCamera::OriginCamera(OriginBackendSimple *backend)
     : m_backend(backend)
 {
     setVersion(1, 0);
-    
-    // Set up the image callback - backend already downloads the image!
-    if (m_backend)
-    {
-        m_backend->setImageCallback([this](const QString& path, const QByteArray& data, 
-                                            double ra, double dec, double exposure) {
-            // Backend has already downloaded the image data for us!
-            this->onImageReady(path, data, ra, dec);
-        });
-    }
 }
 
 OriginCamera::~OriginCamera()
 {
     // Cleanup if needed
+}
+
+void OriginCamera::setBackend(OriginBackendSimple *backend)
+{
+    m_backend = backend;
+    
+    // Set up the image callback now that we have a backend
+    if (m_backend)
+    {
+        m_backend->setImageCallback([this](const QString& path, const QByteArray& data, 
+                                            double ra, double dec, double /*exposure*/) {
+            this->onImageReady(path, data, ra, dec);
+        });
+        
+        qDebug() << "Camera backend connected";
+    }
 }
 
 const char *OriginCamera::getDefaultName()
@@ -380,6 +409,12 @@ bool OriginCamera::updateProperties()
 
 bool OriginCamera::Connect()
 {
+    // Check if we have a backend
+    if (!m_backend)
+    {
+        LOG_ERROR("Camera cannot connect - telescope not connected yet");
+        return false;
+    }
     qDebug() << ("Origin Camera connected");
     // START THE CAMERA'S TIMER!
     SetTimer(getCurrentPollingPeriod());
