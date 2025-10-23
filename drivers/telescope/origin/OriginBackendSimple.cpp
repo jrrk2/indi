@@ -13,6 +13,246 @@
 #include <fcntl.h>
 #include <errno.h>
 
+#include <regex>
+#include <ctime>
+#include <cstring>
+
+OriginDiscovery::OriginDiscovery()
+{
+}
+
+OriginDiscovery::~OriginDiscovery()
+{
+    stopDiscovery();
+}
+
+bool OriginDiscovery::startDiscovery()
+{
+    qDebug() << "Starting telescope discovery...";
+    
+    // Close existing socket if open
+    if (m_udpSocket >= 0)
+    {
+        close(m_udpSocket);
+        m_udpSocket = -1;
+    }
+    
+    // Clear previous discoveries
+    m_telescopes.clear();
+    
+    // Create UDP socket
+    m_udpSocket = socket(AF_INET, SOCK_DGRAM, 0);
+    if (m_udpSocket < 0)
+    {
+        qDebug() << "Failed to create UDP socket:" << strerror(errno);
+        return false;
+    }
+    
+    // Set socket to non-blocking mode
+    int flags = fcntl(m_udpSocket, F_GETFL, 0);
+    fcntl(m_udpSocket, F_SETFL, flags | O_NONBLOCK);
+    
+    // Enable address reuse
+    int reuse = 1;
+    if (setsockopt(m_udpSocket, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0)
+    {
+        qDebug() << "Failed to set SO_REUSEADDR:" << strerror(errno);
+    }
+    
+#ifdef SO_REUSEPORT
+    if (setsockopt(m_udpSocket, SOL_SOCKET, SO_REUSEPORT, &reuse, sizeof(reuse)) < 0)
+    {
+        qDebug() << "Failed to set SO_REUSEPORT:" << strerror(errno);
+    }
+#endif
+    
+    // Enable broadcast reception
+    int broadcast = 1;
+    if (setsockopt(m_udpSocket, SOL_SOCKET, SO_BROADCAST, &broadcast, sizeof(broadcast)) < 0)
+    {
+        qDebug() << "Failed to enable broadcast:" << strerror(errno);
+    }
+    
+    // Bind to port 55555 on all interfaces
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_port = htons(55555);
+    
+    if (bind(m_udpSocket, (struct sockaddr*)&addr, sizeof(addr)) < 0)
+    {
+        qDebug() << "Failed to bind to port 55555:" << strerror(errno);
+        close(m_udpSocket);
+        m_udpSocket = -1;
+        return false;
+    }
+    
+    m_discovering = true;
+    m_discoveryStartTime = time(nullptr);
+    
+    qDebug() << "Listening for telescope broadcasts on port 55555...";
+    
+    return true;
+}
+
+void OriginDiscovery::stopDiscovery()
+{
+    if (m_udpSocket >= 0)
+    {
+        close(m_udpSocket);
+        m_udpSocket = -1;
+    }
+    
+    m_discovering = false;
+    
+    qDebug() << "Discovery stopped";
+}
+
+void OriginDiscovery::poll()
+{
+  if (false) qDebug() << "poll()";
+
+    if (!m_discovering || m_udpSocket < 0)
+        return;
+    
+    // Check for timeout (300 seconds)
+    time_t now = time(nullptr);
+    if (now - m_discoveryStartTime > 300)
+    {
+        qDebug() << "Discovery timeout after 300 seconds";
+        stopDiscovery();
+        return;
+    }
+    
+    // Process any pending datagrams
+    processPendingDatagrams();
+}
+
+void OriginDiscovery::processPendingDatagrams()
+{
+    char buffer[4096];
+    struct sockaddr_in sender_addr;
+    socklen_t sender_len = sizeof(sender_addr);
+
+    if (false) qDebug() << "pending datagrams";
+    
+    // Read all available datagrams
+    while (m_udpSocket > 0)
+    {
+        ssize_t bytesRead = recvfrom(m_udpSocket, buffer, sizeof(buffer) - 1, 0,
+                                     (struct sockaddr*)&sender_addr, &sender_len);
+        
+        if (bytesRead < 0)
+        {
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+            {
+                // No more data available
+                break;
+            }
+            else
+            {
+                qDebug() << "recvfrom error:" << strerror(errno);
+                break;
+            }
+        }
+        
+        if (bytesRead == 0)
+            break;
+        
+        // Null-terminate the data
+        buffer[bytesRead] = '\0';
+        std::string datagram(buffer, bytesRead);
+        
+        // Get sender IP
+        char sender_ip[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &sender_addr.sin_addr, sender_ip, INET_ADDRSTRLEN);
+        
+        // Check if this looks like a telescope broadcast
+        if (datagram.find("Origin") != std::string::npos && 
+            datagram.find("IP Address") != std::string::npos)
+        {
+            // Extract telescope information
+            std::string telescopeIP = extractIPAddress(datagram);
+            std::string telescopeModel = extractModel(datagram);
+
+	    if (false) qDebug() << "extract datagram" << telescopeIP.c_str();
+	    
+            if (telescopeIP.empty())
+            {
+                // Use sender IP if we couldn't extract it
+                telescopeIP = sender_ip;
+            }
+            
+            // Check if we already have this telescope
+            bool found = false;
+            for (auto& telescope : m_telescopes)
+            {
+                if (telescope.ipAddress == telescopeIP)
+                {
+                    telescope.lastSeen = time(nullptr);
+                    found = true;
+                    break;
+                }
+            }
+            
+            if (!found)
+            {
+                // Add new telescope
+                TelescopeInfo info;
+                info.ipAddress = telescopeIP;
+                info.model = telescopeModel.empty() ? "Celestron Origin" : telescopeModel;
+                info.lastSeen = time(nullptr);
+                
+                m_telescopes.push_back(info);
+                
+                qDebug() << "Discovered telescope:" << info.ipAddress.c_str() 
+                         << "-" << info.model.c_str();
+
+		// Call discovery callback
+		if (m_callback) m_callback(info);
+            }
+        }
+    }
+}
+
+std::string OriginDiscovery::extractIPAddress(const std::string& datagram)
+{
+    // Regex to match IP address (e.g., 192.168.1.195)
+    std::regex ipRegex("\\b(?:(\\d{1,3}\\.){3}\\d{1,3})\\b");
+    std::smatch match;
+    
+    if (std::regex_search(datagram, match, ipRegex))
+    {
+        return match.str(0);
+    }
+    
+    return "";
+}
+
+std::string OriginDiscovery::extractModel(const std::string& datagram)
+{
+    // Look for "Identity:" followed by the model name
+    size_t identityPos = datagram.find("Identity:");
+    if (identityPos != std::string::npos)
+    {
+        size_t start = identityPos + 9;  // Skip "Identity:"
+        size_t end = datagram.find(" ", start);
+        
+        if (end != std::string::npos && end > start)
+        {
+            return datagram.substr(start, end - start);
+        }
+    }
+    
+    return "";
+}
+
+std::vector<OriginDiscovery::TelescopeInfo> OriginDiscovery::getDiscoveredTelescopes() const
+{
+    return m_telescopes;
+}
+
 OriginBackendSimple::OriginBackendSimple()
     : m_webSocket(new SimpleWebSocket())
     , m_connectedPort(80)

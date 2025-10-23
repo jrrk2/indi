@@ -4,8 +4,7 @@
 #include <indiccd.h>
 #include <memory>
 #include "TelescopeData.hpp"
-
-class OriginBackendSimple;  // Forward declaration
+#include "OriginBackendSimple.hpp"
 
 class OriginTelescope : public INDI::Telescope
 {
@@ -17,8 +16,6 @@ public:
     virtual bool initProperties() override;
     virtual bool updateProperties() override;
     
-    virtual bool ISNewText(const char *dev, const char *name, char *texts[], char *names[], int n) override;
-
 protected:
     virtual bool Connect() override;
     virtual bool Disconnect() override;
@@ -28,19 +25,21 @@ protected:
     virtual bool Abort() override;
     virtual bool Park() override;
     virtual bool UnPark() override;
+    virtual void TimerHit() override;
+    virtual bool ISNewText(const char *dev, const char *name, char *texts[], char *names[], int n) override;
 
 private:
+    OriginBackendSimple *m_backend {nullptr};
+    OriginDiscovery m_discovery;
+    bool m_telescopeDiscovered {false};
+    
     ITextVectorProperty AddressTP;
     IText AddressT[2] {};
-    
-    OriginBackendSimple *m_backend {nullptr};
     
     double m_currentRA {0};
     double m_currentDec {0};
     bool m_connected {false};
-    
-    // REMOVED: INDI::Timer polling_timer;
-    // We're using the base class timer mechanism instead
+    void onTelescopeDiscovered(const OriginDiscovery::TelescopeInfo& info);
 };
 
 class OriginCamera : public INDI::CCD

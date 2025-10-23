@@ -6,6 +6,47 @@
 #include <functional>
 #include "SimpleWebSocket.h"
 #include "TelescopeData.hpp"
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <vector>
+#include <string>
+
+class OriginDiscovery
+{
+public:
+    struct TelescopeInfo {
+        std::string ipAddress;
+        std::string model;
+        time_t lastSeen;
+    };
+    
+    OriginDiscovery();
+    ~OriginDiscovery();
+    
+    bool startDiscovery();
+    void stopDiscovery();
+    void poll();  // Call this regularly from your main poll() loop
+    
+    std::vector<TelescopeInfo> getDiscoveredTelescopes() const;
+    bool isDiscovering() const { return m_discovering; }
+    // Callback type: called when a new telescope is discovered
+    using DiscoveryCallback = std::function<void(const TelescopeInfo&)>;
+    void setDiscoveryCallback(DiscoveryCallback callback) { m_callback = callback; }
+
+private:
+    int m_udpSocket {-1};
+    bool m_discovering {false};
+    std::vector<TelescopeInfo> m_telescopes;
+    time_t m_discoveryStartTime {0};
+    DiscoveryCallback m_callback;
+  
+    void processPendingDatagrams();
+    std::string extractIPAddress(const std::string& datagram);
+    std::string extractModel(const std::string& datagram);
+};
 
 class OriginBackendSimple
 {

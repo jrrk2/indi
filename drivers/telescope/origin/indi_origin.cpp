@@ -1,5 +1,4 @@
 #include "indi_origin.h"
-#include "OriginBackendSimple.hpp"
 #include <indicom.h>
 #include <memory>
 #include <cstring>
@@ -29,9 +28,13 @@ OriginTelescope::OriginTelescope()
         TELESCOPE_CAN_GOTO | 
         TELESCOPE_CAN_SYNC | 
         TELESCOPE_CAN_ABORT |
+        TELESCOPE_CAN_CONTROL_TRACK |
         TELESCOPE_CAN_PARK |
+        TELESCOPE_CAN_HOME_SET |
+        TELESCOPE_CAN_HOME_GO |
         TELESCOPE_HAS_TIME |
-        TELESCOPE_HAS_LOCATION,
+        TELESCOPE_HAS_LOCATION |
+        TELESCOPE_HAS_TRACK_MODE,
         4
     );
 }
@@ -67,12 +70,31 @@ bool OriginTelescope::initProperties()
     );
     
     // Connection address
-    IUFillText(&AddressT[0], "HOST", "Host", "192.168.1.195");
+    IUFillText(&AddressT[0], "HOST", "Host", "");
     IUFillText(&AddressT[1], "PORT", "Port", "80");
     IUFillTextVector(&AddressTP, AddressT, 2, getDeviceName(),
                      "DEVICE_ADDRESS", "Server", CONNECTION_TAB, IP_RW, 60, IPS_IDLE);
     
+    // Set up discovery callback
+    m_discovery.setDiscoveryCallback([this](const OriginDiscovery::TelescopeInfo& info) {
+        this->onTelescopeDiscovered(info);
+    });
+    
+    // Start discovery immediately
+    if (m_discovery.startDiscovery())
+    {
+        qDebug() << "Auto-started telescope discovery on port 55555";
+    }
+    else
+    {
+        qDebug() << "Failed to start auto-discovery";
+    }
+    
     addDebugControl();
+
+    // Start the INDI base class timer - it will automatically call ReadScopeStatus()
+    SetTimer(getCurrentPollingPeriod());
+    qDebug() << ("Timer set");
     
     qDebug() << ("initProperties() complete");
     
@@ -93,6 +115,43 @@ bool OriginTelescope::updateProperties()
     }
     
     return true;
+}
+
+// Callback when telescope is discovered
+void OriginTelescope::onTelescopeDiscovered(const OriginDiscovery::TelescopeInfo& info)
+{
+    if (m_telescopeDiscovered)
+        return;  // Already found one
+    
+    LOGF_INFO("Discovered: %s - %s", info.ipAddress.c_str(), info.model.c_str());
+    
+    // Update the connection address
+    IUSaveText(&AddressT[0], info.ipAddress.c_str());
+    IUSaveText(&AddressT[1], "80");
+    
+    // Notify the client that the property has changed
+    AddressTP.s = IPS_OK;
+    IDSetText(&AddressTP, "Found Origin telescope at %s", info.ipAddress.c_str());
+    
+    m_telescopeDiscovered = true;
+    
+    // Stop discovery after finding first telescope
+    m_discovery.stopDiscovery();
+    
+    LOGF_INFO("Set connection address to %s:80", info.ipAddress.c_str());
+}
+
+void OriginTelescope::TimerHit()
+{
+  if (false) qDebug() << "telescope timer hit";  
+    // Poll discovery if active
+    if (m_discovery.isDiscovering()) m_discovery.poll();
+    
+    // Poll backend for telescope updates
+    if (m_backend && isConnected()) ReadScopeStatus();
+
+    if (false) qDebug() << "telescope timer reschedule";  
+    SetTimer(getCurrentPollingPeriod());
 }
 
 bool OriginTelescope::Connect()
@@ -119,10 +178,6 @@ bool OriginTelescope::Connect()
     m_backend->setConnected(true);
     m_connected = true;
 
-    // Start the INDI base class timer - it will automatically call ReadScopeStatus()
-    SetTimer(getCurrentPollingPeriod());
-    qDebug() << ("Timer set");
-    
     // Create camera device
     if (!camera)
     {
@@ -463,7 +518,7 @@ bool OriginCamera::UpdateCCDBin(int binx, int biny)
 }
 
 void OriginCamera::TimerHit()
-{
+{  
     if (!isConnected())
         return;
     
