@@ -1,3 +1,7 @@
+cmake_minimum_required(VERSION 3.18)
+project(INDI_alignment CXX C)
+
+
 INCLUDE_DIRECTORIES( ${INDI_INCLUDE_DIR} )
 
 ADD_EXECUTABLE(test_alignment

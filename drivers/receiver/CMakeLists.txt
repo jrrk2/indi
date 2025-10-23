@@ -1,3 +1,7 @@
+cmake_minimum_required(VERSION 3.18)
+project(INDI_receiver CXX C)
+
+
 # ############### Receiver Simulator ################
 SET(receiversimulator_SRC
     receiver_simulator.cpp)

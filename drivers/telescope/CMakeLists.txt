@@ -1,3 +1,7 @@
+cmake_minimum_required(VERSION 3.18)
+project(INDI_telescope CXX C)
+
+
 # ###################################################################################################
 #
 # Component   : LX200 Library

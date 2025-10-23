@@ -1,3 +1,7 @@
+cmake_minimum_required(VERSION 3.18)
+project(INDI_io CXX C)
+
+
 # ########## Waveshare Relay ###############
 SET(wavesharerelay_SRC
     waveshare_modbus_relay.cpp

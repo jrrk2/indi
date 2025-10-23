@@ -1,3 +1,7 @@
+cmake_minimum_required(VERSION 3.18)
+project(INDI_tutorial_six CXX C)
+
+
 ########### Tutorial Six ##############
 add_executable(tutorial_client tutorial_client.cpp)
 

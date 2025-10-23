@@ -1,3 +1,7 @@
+cmake_minimum_required(VERSION 3.18)
+project(INDI_weather CXX C)
+
+
 # ########## Weather Simulator ###############
 
 SET(weathersimulator_SRC

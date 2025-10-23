@@ -1,3 +1,7 @@
+cmake_minimum_required(VERSION 3.18)
+project(INDI_video CXX C)
+
+
 # ########## INDI::CCD V4L Driver ###############
 
 IF(${CMAKE_SYSTEM_NAME} MATCHES "Linux|FreeBSD|OpenBSD")
