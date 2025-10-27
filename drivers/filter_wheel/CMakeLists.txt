@@ -1,3 +1,7 @@
+cmake_minimum_required(VERSION 3.18)
+project(INDI_filter_wheel CXX C)
+
+
 # ########## XAGYL Wheel ##############
 SET(xagylwheel_SRC
     xagyl_wheel.cpp)

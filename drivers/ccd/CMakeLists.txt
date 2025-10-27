@@ -1,3 +1,7 @@
+cmake_minimum_required(VERSION 3.18)
+project(INDI_ccd CXX C)
+
+
 # ########## CCD Simulator ##############
 SET(ccdsimulator_SRC
     ccd_simulator.cpp)

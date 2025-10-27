@@ -1,3 +1,7 @@
+cmake_minimum_required(VERSION 3.18)
+project(INDI_rotator CXX C)
+
+
 # ############### Rigelsys nFrame Rotator ################
 SET(nframe_SRC
     nframe.cpp)

@@ -1,3 +1,7 @@
+cmake_minimum_required(VERSION 3.18)
+project(INDI_examples CXX C)
+
+
 add_subdirectory(tutorial_one)
 add_subdirectory(tutorial_two)
 add_subdirectory(tutorial_three)

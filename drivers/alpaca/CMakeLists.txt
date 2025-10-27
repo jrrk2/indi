@@ -1,3 +1,7 @@
+cmake_minimum_required(VERSION 3.18)
+project(INDI_alpaca CXX C)
+
+
 ########### Alpaca Server ###########
 set(indi_alpaca_SRCS
     indi_alpaca_server.cpp

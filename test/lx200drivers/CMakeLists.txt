@@ -1,3 +1,7 @@
+cmake_minimum_required(VERSION 3.18)
+project(INDI_lx200drivers CXX C)
+
+
 
 include_directories( ${INDI_INCLUDE_DIR})
 include_directories("../../drivers/telescope/")

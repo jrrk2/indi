@@ -1,3 +1,7 @@
+cmake_minimum_required(VERSION 3.18)
+project(INDI_drivers CXX C)
+
+
 INCLUDE_DIRECTORIES( ${INDI_INCLUDE_DIR} )
 INCLUDE_DIRECTORIES( "../../drivers/ccd" )
 

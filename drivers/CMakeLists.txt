@@ -1,3 +1,7 @@
+cmake_minimum_required(VERSION 3.18)
+project(INDI_drivers CXX C)
+
+
 add_subdirectory(telescope)
 add_subdirectory(ccd)
 add_subdirectory(focuser)

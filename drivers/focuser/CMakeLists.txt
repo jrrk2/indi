@@ -1,3 +1,7 @@
+cmake_minimum_required(VERSION 3.18)
+project(INDI_focuser CXX C)
+
+
 # ############### Focuser Simulator ################
 SET(focussimulator_SRC
     focus_simulator.cpp)

@@ -1,3 +1,7 @@
+cmake_minimum_required(VERSION 3.18)
+project(INDI_agent CXX C)
+
+
 # ########## Imager ##############
 set(imager_SRCS
     agent_imager.cpp
