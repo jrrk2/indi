@@ -9,7 +9,9 @@
 #include <stdio.h>
 #include <tiffio.h>
 #include <cstring>
+#include <QDir>
 #include <QFile>
+#include <QStandardPaths>
 
 #warning "compiling indi_origin.cpp"
 
@@ -664,9 +666,25 @@ bool OriginCamera::processAndUploadImage(const QByteArray& imageData)
 {
     qDebug() << "Processing 16-bit RGB TIFF with libtiff:" << imageData.size() << "bytes";
     
-    // Write TIFF data to a temporary file for libtiff to read
-    // (libtiff can also read from memory but file is simpler)
-    QString tempPath = QString("/tmp/origin_temp_%1.tiff").arg(QDateTime::currentMSecsSinceEpoch());
+    // Use QStandardPaths to get a persistent temp directory
+    QString tempDir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    
+    // Create the directory if it doesn't exist
+    QDir dir(tempDir);
+    if (!dir.exists())
+    {
+        if (!dir.mkpath("."))
+        {
+            qDebug() << "Failed to create cache directory:" << tempDir;
+            return false;
+        }
+    }
+    
+    // Create temp file in persistent location
+    QString tempPath = QString("%1/origin_temp_%2.tiff")
+                           .arg(tempDir)
+                           .arg(QDateTime::currentMSecsSinceEpoch());
+    
     QFile tempFile(tempPath);
     if (!tempFile.open(QIODevice::WriteOnly))
     {
