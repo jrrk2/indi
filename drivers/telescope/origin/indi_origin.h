@@ -29,7 +29,6 @@ protected:
     virtual bool ISNewText(const char *dev, const char *name, char *texts[], char *names[], int n) override;
 
 private:
-    OriginBackendSimple *m_backend {nullptr};
     OriginDiscovery m_discovery;
     bool m_telescopeDiscovered {false};
     
@@ -45,7 +44,7 @@ private:
 class OriginCamera : public INDI::CCD
 {
 public:
-    OriginCamera(OriginBackendSimple *backend);
+    OriginCamera();
     virtual ~OriginCamera();
 
     virtual const char *getDefaultName() override;
@@ -70,7 +69,6 @@ protected:
     virtual void addFITSKeywords(INDI::CCDChip *targetChip, std::vector<INDI::FITSRecord> &fitsKeyword) override;
 
 private:
-    OriginBackendSimple *m_backend;
     double m_exposureStart {0};
     double m_exposureDuration {0};
     

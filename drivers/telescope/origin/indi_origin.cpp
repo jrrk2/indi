@@ -13,11 +13,10 @@
 #include <QFile>
 #include <QStandardPaths>
 
-#warning "compiling indi_origin.cpp"
-
 // INDI requires these for driver registration
 std::unique_ptr<OriginTelescope> telescope(new OriginTelescope());
-std::unique_ptr<OriginCamera> camera(new OriginCamera(nullptr));
+std::unique_ptr<OriginCamera> camera(new OriginCamera());
+std::unique_ptr<OriginBackendSimple> backend(new OriginBackendSimple());
 
 //=============================================================================
 // TELESCOPE IMPLEMENTATION
@@ -44,11 +43,6 @@ OriginTelescope::OriginTelescope()
 
 OriginTelescope::~OriginTelescope()
 {
-    if (m_backend)
-    {
-        delete m_backend;
-        m_backend = nullptr;
-    }
 }
 
 const char *OriginTelescope::getDefaultName()
@@ -151,7 +145,7 @@ void OriginTelescope::TimerHit()
     if (m_discovery.isDiscovering()) m_discovery.poll();
     
     // Poll backend for telescope updates
-    if (m_backend && isConnected()) ReadScopeStatus();
+    if (isConnected()) ReadScopeStatus();
 
     if (false) qDebug() << "telescope timer reschedule";  
     SetTimer(getCurrentPollingPeriod());
@@ -174,43 +168,21 @@ bool OriginTelescope::Connect()
     
     qDebug() << "Connecting to " << host.toUtf8().constData() << ":" << port;
 
-    // Create backend if needed
-    if (!m_backend)
-    {
-        m_backend = new OriginBackendSimple();
-    }
-        
-    if (!m_backend->connectToTelescope(host, port))
+    if (!backend->connectToTelescope(host, port))
     {
         qDebug() << ("Failed to connect to Origin Telescope");
-        delete m_backend;
-        m_backend = nullptr;
         return false;
     }
     
-    m_backend->setConnected(true);
+    backend->setConnected(true);
     m_connected = true;
-
-    // Create camera device
-    if (!camera)
-    {
-        camera = std::make_unique<OriginCamera>(m_backend);
-        camera->initProperties();
-        camera->ISGetProperties(nullptr);
-    }
     
     // Set up status callback
-    m_backend->setStatusCallback([this]() {
+    backend->setStatusCallback([this]() {
         // Status updated - will be read in ReadScopeStatus()
     });
     
     qDebug() << ("=== Connect() COMPLETE ===");
-
-    // Give the camera access to the backend NOW
-    if (camera)
-    {
-        camera->setBackend(m_backend);
-    }
 
     return true;
 }
@@ -219,12 +191,7 @@ bool OriginTelescope::Disconnect()
 {
     qDebug() << ("Disconnecting from Origin Telescope");
     
-    if (m_backend)
-    {
-        m_backend->disconnectFromTelescope();
-        delete m_backend;
-        m_backend = nullptr;
-    }
+    backend->disconnectFromTelescope();
     
     m_connected = false;
     
@@ -233,16 +200,16 @@ bool OriginTelescope::Disconnect()
 
 bool OriginTelescope::ReadScopeStatus()
 {
-    if (!m_backend || !m_connected)
+    if (!m_connected)
     {
         qDebug() << ("ReadScopeStatus called but not connected");
         return false;
     }
     
     // Poll the backend to get latest data
-    m_backend->poll();
+    backend->poll();
     
-    auto status = m_backend->status();
+    auto status = backend->status();
     
     if (false) qDebug() << "Backend status: RA=" <<
       status.raPosition << " Dec=" << status.decPosition << "Tracking=" << status.isTracking << "Slewing=" << status.isSlewing;
@@ -288,12 +255,12 @@ bool OriginTelescope::ReadScopeStatus()
 
 bool OriginTelescope::Goto(double ra, double dec)
 {
-    if (!m_backend || !m_connected)
+    if (!m_connected)
         return false;
     
     qDebug() << "Slewing to RA:" << ra << " Dec:" << dec;
     
-    if (m_backend->gotoPosition(ra, dec))
+    if (backend->gotoPosition(ra, dec))
     {
         TrackState = SCOPE_SLEWING;
         return true;
@@ -304,39 +271,39 @@ bool OriginTelescope::Goto(double ra, double dec)
 
 bool OriginTelescope::Sync(double ra, double dec)
 {
-    if (!m_backend || !m_connected)
+    if (!m_connected)
         return false;
     
     qDebug() << "Syncing to RA:" << ra << " Dec:" << dec;
     
-    return m_backend->syncPosition(ra, dec);
+    return backend->syncPosition(ra, dec);
 }
 
 bool OriginTelescope::Abort()
 {
-    if (!m_backend || !m_connected)
+    if (!m_connected)
         return false;
     
     qDebug() << ("Aborting slew");
-    return m_backend->abortMotion();
+    return backend->abortMotion();
 }
 
 bool OriginTelescope::Park()
 {
-    if (!m_backend || !m_connected)
+    if (!m_connected)
         return false;
     
     qDebug() << ("Parking telescope");
-    return m_backend->parkMount();
+    return backend->parkMount();
 }
 
 bool OriginTelescope::UnPark()
 {
-    if (!m_backend || !m_connected)
+    if (!m_connected)
         return false;
     
     qDebug() << ("Unparking telescope");
-    return m_backend->unparkMount();
+    return backend->unparkMount();
 }
 
 bool OriginTelescope::ISNewText(const char *dev, const char *name, char *texts[], char *names[], int n)
@@ -359,8 +326,7 @@ bool OriginTelescope::ISNewText(const char *dev, const char *name, char *texts[]
 // CAMERA IMPLEMENTATION - Using callback data directly
 //=============================================================================
 
-OriginCamera::OriginCamera(OriginBackendSimple *backend)
-    : m_backend(backend)
+OriginCamera::OriginCamera()
 {
     setVersion(1, 0);
 }
@@ -368,22 +334,6 @@ OriginCamera::OriginCamera(OriginBackendSimple *backend)
 OriginCamera::~OriginCamera()
 {
     // Cleanup if needed
-}
-
-void OriginCamera::setBackend(OriginBackendSimple *backend)
-{
-    m_backend = backend;
-    
-    // Set up the image callback now that we have a backend
-    if (m_backend)
-    {
-        m_backend->setImageCallback([this](const QString& path, const QByteArray& data, 
-                                            double ra, double dec, double /*exposure*/) {
-            this->onImageReady(path, data, ra, dec);
-        });
-        
-        qDebug() << "Camera backend connected";
-    }
 }
 
 const char *OriginCamera::getDefaultName()
@@ -411,13 +361,14 @@ bool OriginCamera::updateProperties()
 
 bool OriginCamera::Connect()
 {
-    // Check if we have a backend
-    if (!m_backend)
-    {
-        LOG_ERROR("Camera cannot connect - telescope not connected yet");
-        return false;
-    }
     qDebug() << ("Origin Camera connected");
+    initProperties();
+    ISGetProperties(nullptr);
+    
+    backend->setImageCallback([this](const QString& path, const QByteArray& data, 
+				       double ra, double dec, double /*exposure*/) {
+      this->onImageReady(path, data, ra, dec);
+    });
     // START THE CAMERA'S TIMER!
     SetTimer(getCurrentPollingPeriod());
     return true;
@@ -474,9 +425,6 @@ void OriginCamera::onImageReady(const QString& filePath, const QByteArray& image
 
 bool OriginCamera::StartExposure(float duration)
 {
-    if (!m_backend)
-        return false;
-    
     qDebug() << "Starting exposure:" << duration << "seconds";
     
     // Clear previous state
@@ -502,7 +450,7 @@ bool OriginCamera::StartExposure(float duration)
     else
     {
         // Full resolution capture
-        success = m_backend->takeSnapshot(duration, iso);
+        success = backend->takeSnapshot(duration, iso);
         qDebug() << "Full mode: triggered snapshot capture";
     }
     
@@ -526,9 +474,6 @@ bool OriginCamera::StartExposure(float duration)
 
 bool OriginCamera::AbortExposure()
 {
-    if (!m_backend)
-        return false;
-    
     qDebug() << "Aborting exposure";
     
     InExposure = false;
@@ -547,9 +492,6 @@ bool OriginCamera::UpdateCCDFrame(int, int, int, int)
 
 bool OriginCamera::UpdateCCDBin(int binx, int biny)
 {
-    if (!m_backend)
-        return false;
-    
     qDebug() << "Setting binning to" << binx << "x" << biny;
     return true;
 }
