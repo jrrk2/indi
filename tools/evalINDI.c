@@ -18,16 +18,20 @@
 
 #include <errno.h>
 #include <math.h>
+#ifdef _WIN32
+#include "indi_win_compat.h"
+#else
 #include <netdb.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#endif
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-#include <netinet/in.h>
 #include <sys/types.h>
-#include <sys/socket.h>
 
 extern int compileExpr(char *expr, char *errmsg);
 extern int evalExpr(double *vp, char *errmsg);

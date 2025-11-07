@@ -20,7 +20,9 @@
 #include "indistandardproperty.h"
 #include "indicom.h"
 #include "indilogger.h"
-
+#ifdef _WIN32
+#include "indi_win_compat.h"
+#endif
 #include <dirent.h>
 #include <cerrno>
 #include <cstring>

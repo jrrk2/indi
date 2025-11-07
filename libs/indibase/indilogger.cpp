@@ -28,6 +28,10 @@
 #include <cstring>
 #include <sys/stat.h>
 
+#ifdef _WIN32
+#include "indi_win_compat.h"
+#endif
+
 namespace INDI
 {
 char Logger::Tags[Logger::nlevels][MAXINDINAME] = { "ERROR",       "WARNING",     "INFO",        "DEBUG",

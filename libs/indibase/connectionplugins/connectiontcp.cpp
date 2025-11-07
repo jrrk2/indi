@@ -23,7 +23,11 @@
 #include "indistandardproperty.h"
 
 #include <cerrno>
+#ifdef _WIN32
+#include "indi_win_compat.h"
+#else
 #include <netdb.h>
+#endif
 #include <cstring>
 #include <unistd.h>
 #include <regex>
@@ -191,9 +195,10 @@ bool TCP::establishConnection(const std::string &hostname, const std::string &po
     }
 
     // Set the socket receiving and sending timeouts
+#ifndef _WIN32
     setsockopt(m_SockFD, SOL_SOCKET, SO_RCVTIMEO, &ts, sizeof(struct timeval));
     setsockopt(m_SockFD, SOL_SOCKET, SO_SNDTIMEO, &ts, sizeof(struct timeval));
-
+#endif
     // Connect to the device
     if (::connect(m_SockFD, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
     {

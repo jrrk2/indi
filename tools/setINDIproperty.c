@@ -9,16 +9,20 @@
 
 #include <errno.h>
 #include <math.h>
+#ifdef _WIN32
+#include "indi_win_compat.h"
+#else
 #include <netdb.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
 #include <time.h>
 #include <unistd.h>
-#include <netinet/in.h>
 #include <sys/types.h>
-#include <sys/socket.h>
 
 /* table of INDI definition elements we can set
  * N.B. do not change defs[] order, they are indexed via -x/-n/-s args
