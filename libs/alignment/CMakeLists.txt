@@ -28,9 +28,6 @@ IF(UNITY_BUILD)
     ENABLE_UNITY_BUILD(AlignmentDriver AlignmentDriver_SRC 15 cpp)
 ENDIF()
 
-IF(WIN32)
-ELSE()
-
 add_library(AlignmentDriver STATIC ${AlignmentDriver_SRC})
 set_target_properties(AlignmentDriver PROPERTIES COMPILE_FLAGS "-fPIC")
 
@@ -50,11 +47,9 @@ ELSE()
             ${NOVA_LIBRARIES}
     )
     # MinGW-only: pull in symbols from indidriver_OBJECT to resolve Logger, IDSet*, IUUpdate*, etc.
-    if(MINGW)
-        target_link_libraries(AlignmentDriver PRIVATE $<TARGET_OBJECTS:indidriver_OBJECT>)
+    if(WIN32)
+	    target_link_libraries(AlignmentDriver PRIVATE indidriver_STATIC)
     endif()
-
-ENDIF()
 
 if(INDI_BUILD_QT5)
     target_link_libraries(AlignmentDriver Qt5::Network)
