@@ -23,14 +23,23 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110 - 1301  USA
 
 #endif
 
+#ifdef _WIN32
+#define _WINSOCK_DEPRECATED_NO_WARNINGS
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
 #include <string.h>
 #include <unistd.h>
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#endif
 #include <errno.h>
 #include <pthread.h>
 
@@ -50,7 +59,13 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110 - 1301  USA
 
 #define MAXFD_PER_MESSAGE 16
 
+#ifndef _WIN32
+
 static void driverio_flush(driverio * dio, const void * additional, size_t add_size);
+#else
+/* stub for Windows */
+static int driverio_flush(...);
+#endif
 
 static pthread_mutex_t stdout_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -138,7 +153,7 @@ static void driverio_join(void * user, const char * xml, void * blob, size_t blo
     driverio_write(user, xml, strlen(xml));
 }
 
-
+#ifndef _WIN32
 static void driverio_flush(driverio * dio, const void * additional, size_t add_size)
 {
     struct msghdr msgh;
@@ -268,10 +283,18 @@ static void driverio_flush(driverio * dio, const void * additional, size_t add_s
     dio->outPos = 0;
 
 }
-
+#else
+/* stub for Windows */
+int driverio_flush(...)
+{
+    /* Windows doesn't support sending file descriptors between processes. */
+    return -1;
+}
+#endif
 
 static int driverio_is_unix = -1;
 
+#ifndef _WIN32
 static int is_unix_io()
 {
 #ifndef ENABLE_INDI_SHARED_MEMORY
@@ -317,6 +340,13 @@ static int is_unix_io()
 #endif
     return driverio_is_unix;
 }
+#else
+int is_unix_io()
+{
+    /* No UNIX domain sockets on Windows. */
+    return 0;
+}
+#endif
 
 /* Unix io allow attaching buffer in ancillary data. */
 static void driverio_init_unix(driverio * dio)

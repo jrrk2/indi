@@ -1036,7 +1036,12 @@ FILE *IUGetConfigFP(const char *filename, const char *dev, const char *mode, cha
 
     if (stat(configDir, &st) != 0)
     {
+#ifdef _WIN32
+        if (mkdir(configDir) < 0)
+#else
         if (mkdir(configDir, S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH) < 0)
+#endif
+
         {
             snprintf(errmsg, MAXRBUF, "Unable to create config directory. Error %s: %s", configDir, strerror(errno));
             return NULL;
@@ -1045,6 +1050,7 @@ FILE *IUGetConfigFP(const char *filename, const char *dev, const char *mode, cha
 
     stat(configFileName, &st);
     /* If file is owned by root and current user is NOT root then abort */
+#ifndef _WIN32
     if ( (st.st_uid == 0 && getuid() != 0) || (st.st_gid == 0 && getgid() != 0) )
     {
         strncpy(errmsg,
@@ -1052,7 +1058,7 @@ FILE *IUGetConfigFP(const char *filename, const char *dev, const char *mode, cha
                 MAXRBUF);
         return NULL;
     }
-
+#endif
     fp = fopen(configFileName, mode);
     if (fp == NULL)
     {

@@ -31,7 +31,7 @@ extern "C" {
 #endif
 #endif
 
-#if defined(__linux__) || defined(_WIN32) || defined(__CYGWIN__)
+#if defined(__linux__) || defined(__CYGWIN__)
 #include <endian.h>
 #else
 #define __bswap_16(a) __builtin_bswap16(a)

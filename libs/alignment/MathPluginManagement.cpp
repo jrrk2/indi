@@ -9,7 +9,14 @@
 #include "MathPluginManagement.h"
 
 #include <dirent.h>
+#ifdef _WIN32
+#define dlopen(...) nullptr
+#define dlclose(...) nullptr
+#define dlsym(...) nullptr
+#define dlerror(...) nullptr
+#else
 #include <dlfcn.h>
+#endif
 #include <cerrno>
 
 namespace INDI

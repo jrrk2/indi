@@ -13,7 +13,7 @@
 
 #ifdef _WIN32
 #include <direct.h>
-#include <Windows.h>
+#include <windows.h>
 #endif
 
 #define MAXRBUF 2048

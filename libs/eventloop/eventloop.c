@@ -42,10 +42,14 @@
 #include <sys/time.h>
 
 #if defined(_WIN32) || defined(__CYGWIN__)
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
 #include <sys/select.h>
 #endif
-
 #include "eventloop.h"
+#include <stdint.h>
+
 
 /* info about one registered callback.
  * the malloced array cback is never shrunk, entries are reused. new id's are

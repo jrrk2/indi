@@ -35,8 +35,14 @@
 #include <cerrno>
 #include <cmath>
 #include <cstring>
+#ifdef _WIN32
+#include "indi_win_compat.h"
+#include "indicom.h"
+#include <time.h>
+#else
 #include <wordexp.h>
 #include <pwd.h>
+#endif
 #include <unistd.h>
 #include <limits>
 

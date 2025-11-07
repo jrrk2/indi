@@ -52,4 +52,7 @@ endif()
 
 add_executable(indi_hid_test hidtest.cpp)
 target_link_libraries(indi_hid_test indi_hid ${USB1_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT} ${LIBS})
+if (WIN32)
+  target_link_libraries(indi_hid_test setupapi)
+endif()
 install(TARGETS indi_hid_test RUNTIME DESTINATION bin)

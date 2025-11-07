@@ -28,20 +28,33 @@ IF(UNITY_BUILD)
     ENABLE_UNITY_BUILD(AlignmentDriver AlignmentDriver_SRC 15 cpp)
 ENDIF()
 
-add_library(AlignmentDriver SHARED ${AlignmentDriver_SRC})
+IF(WIN32)
+ELSE()
+
+add_library(AlignmentDriver STATIC ${AlignmentDriver_SRC})
 set_target_properties(AlignmentDriver PROPERTIES COMPILE_FLAGS "-fPIC")
 
 IF(APPLE)
-    target_link_libraries(AlignmentDriver ${CMAKE_DL_LIBS} -L/usr/local/lib ${GSL_LIBRARIES})
+    target_link_libraries(AlignmentDriver ${CMAKE_DL_LIBS} -L/usr/local/lib ${GSL_LIBRARIES} indidevice indiclient)
 ELSE()
-    # Force linking all referenced libraries because of libgsl is not linked against cblas library on Linux
-    SET(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--no-as-needed")
-    target_link_libraries(AlignmentDriver ${CMAKE_DL_LIBS} ${GSL_LIBRARIES}
-        $<$<PLATFORM_ID:CYGWIN>:indidriver>
-    )
-ENDIF()
+    # Force linking all referenced libraries because of libgsl not being linked against cblas on some platforms
+    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--no-as-needed")
 
-target_link_libraries(AlignmentDriver indidevice indiclient)
+    target_link_libraries(AlignmentDriver
+        PRIVATE
+            ${CMAKE_DL_LIBS}
+            ${GSL_LIBRARIES}
+            indidevice
+            indicore
+            indiclient
+            ${NOVA_LIBRARIES}
+    )
+    # MinGW-only: pull in symbols from indidriver_OBJECT to resolve Logger, IDSet*, IUUpdate*, etc.
+    if(MINGW)
+        target_link_libraries(AlignmentDriver PRIVATE $<TARGET_OBJECTS:indidriver_OBJECT>)
+    endif()
+
+ENDIF()
 
 if(INDI_BUILD_QT5)
     target_link_libraries(AlignmentDriver Qt5::Network)
@@ -80,6 +93,7 @@ set(AlignmentClient_SRCS
     ClientAPIForMathPluginManagement.cpp
     Common.h
 )
+ENDIF()
 
 add_library(AlignmentClient STATIC ${AlignmentClient_SRCS})
 

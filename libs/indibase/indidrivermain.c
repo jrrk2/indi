@@ -47,8 +47,13 @@
 #include <sys/stat.h>
 #include <pthread.h>
 
-#if defined(_WIN32) || defined(__CYGWIN__)
+#if defined(__CYGWIN__)
 #include <sys/select.h>
+#endif
+
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #endif
 
 #define MAXRBUF 2048

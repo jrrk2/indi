@@ -28,12 +28,21 @@
 
 #include <cmath>
 #include <cerrno>
+#ifndef _WIN32
 #include <pwd.h>
+#include <unistd.h>
+#include <wordexp.h>
+#else
+#include <windows.h>
+#include "indi_win_compat.h"
+#include "indicom.h"
+#include <time.h>
+#include <shlobj.h>
+#include <direct.h> // for _mkdir
+#endif
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
-#include <unistd.h>
-#include <wordexp.h>
 #include <limits>
 
 namespace INDI
@@ -2774,7 +2783,12 @@ void Telescope::sendTimeFromSystem()
     TimeTP[UTC].setText(ts);
 
     struct std::tm *localtimeinfo = std::localtime(&t);
+#ifdef _WIN32
+    snprintf(ts, sizeof(ts), "%4.2f", (-_timezone / 3600.0));
+#else
     snprintf(ts, sizeof(ts), "%4.2f", (localtimeinfo->tm_gmtoff / 3600.0));
+#endif
+    
     TimeTP[OFFSET].setText(ts);
 
     TimeTP.setState(IPS_OK);

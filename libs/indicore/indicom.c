@@ -81,6 +81,7 @@
 #endif
 
 #ifdef _WIN32
+#include <windows.h>
 #undef CX
 #undef CY
 #endif
@@ -332,23 +333,34 @@ void IDLog(const char *fmt, ...)
 
 double time_ns()
 {
+#if defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__CYGWIN__)
     struct timespec ts;
-#if defined(HAVE_TIMESPEC_GET)
-    timespec_get(&ts, TIME_UTC);
-#elif defined(HAVE_CLOCK_GETTIME)
     clock_gettime(CLOCK_REALTIME, &ts);
-#elif defined(__APPLE__) // OS X does not have clock_gettime, use clock_get_time
-    clock_serv_t cclock;
-    mach_timespec_t mts;
-    host_get_clock_service(mach_host_self(), CALENDAR_CLOCK, &cclock);
-    clock_get_time(cclock, &mts);
-    mach_port_deallocate(mach_task_self(), cclock);
-    ts.tv_sec = mts.tv_sec;
-    ts.tv_nsec = mts.tv_nsec;
+    return ts.tv_sec * 1000000000.0 + ts.tv_nsec;
+
+#elif defined(_WIN32)
+    /* Use Windows high-resolution performance counter */
+    LARGE_INTEGER freq, counter;
+    if (QueryPerformanceFrequency(&freq) && QueryPerformanceCounter(&counter))
+    {
+        double seconds = (double)counter.QuadPart / (double)freq.QuadPart;
+        return (seconds * 1000000000.0);
+    }
+    else
+    {
+        /* Fallback to GetSystemTimeAsFileTime */
+        FILETIME ft;
+        GetSystemTimeAsFileTime(&ft);
+        ULARGE_INTEGER uli;
+        uli.LowPart  = ft.dwLowDateTime;
+        uli.HighPart = ft.dwHighDateTime;
+        /* FILETIME is in 100-nanosecond intervals since 1601 */
+        return (uli.QuadPart * 100.0);
+    }
+
 #else
     #error "Unsupported platform"
 #endif
-    return (double)ts.tv_sec+(double)(ts.tv_nsec%1000000000)/1000000000.0;
 }
 
 /* return current system time in message format */
